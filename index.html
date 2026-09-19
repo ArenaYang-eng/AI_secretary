@@ -191,16 +191,42 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   }
   var rec=null,listening=false;
   var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-  $('micBtn').addEventListener('click',function(){
-    if(!SR){setStatus('這個瀏覽器不支援語音，請用 Chrome 或打字輸入');return;}
-    if(listening&&rec){rec.stop();return;}
+  var ERR_MSG={
+    'not-allowed':'麥克風權限被封鎖了。請到手機「設定 → App → 小秘書 → 權限 → 麥克風」確認是「允許」（這跟瀏覽器裡按的「允許」是分開的兩個設定）。',
+    'service-not-allowed':'麥克風權限被封鎖了。請到手機「設定 → App → 小秘書 → 權限 → 麥克風」確認是「允許」。',
+    'audio-capture':'抓不到麥克風，請確認沒有其他 App 正在使用麥克風，或重新啟動這個 App。',
+    'network':'語音辨識需要連網才能運作，請確認手機有 WiFi 或行動網路，訊號弱也會失敗。',
+    'no-speech':'沒有聽到聲音，請靠近一點再說一次。',
+    'aborted':'語音輸入被中斷了，請再試一次。'
+  };
+  function startRecognition(){
     rec=new SR();
     rec.lang='zh-TW';rec.interimResults=false;rec.maxAlternatives=1;
     rec.onstart=function(){listening=true;$('micBtn').classList.add('btn-listening');setStatus('請說話，我聽著呢…（再按一次停止）');};
     rec.onend=function(){listening=false;$('micBtn').classList.remove('btn-listening');};
-    rec.onerror=function(){setStatus('語音沒聽清楚，請再說一次或用打字');};
+    rec.onerror=function(e){
+      var msg=ERR_MSG[e.error]||('語音發生錯誤（'+e.error+'），請再試一次或改用打字');
+      setStatus(msg);
+    };
     rec.onresult=function(e){var t=e.results[0][0].transcript;$('inp').value=t;add(t);};
-    try{rec.start();}catch(e){setStatus('麥克風啟動失敗，請檢查權限或用打字');}
+    try{rec.start();}catch(e){setStatus('麥克風啟動失敗（'+(e&&e.message?e.message:e)+'），請檢查權限或用打字');}
+  }
+  $('micBtn').addEventListener('click',function(){
+    if(!SR){setStatus('這個瀏覽器不支援語音，請用 Chrome 或打字輸入');return;}
+    if(listening&&rec){rec.stop();return;}
+    if(!navigator.onLine){setStatus('目前沒有網路連線，語音辨識需要連網才能運作，請改用打字');return;}
+    // 先主動要一次麥克風權限：在「已安裝成桌面 App」的模式下，
+    // 直接呼叫 rec.start() 有時權限判斷會不準，先用 getUserMedia 確認一次比較可靠。
+    if(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia){
+      navigator.mediaDevices.getUserMedia({audio:true}).then(function(stream){
+        stream.getTracks().forEach(function(t){t.stop();});
+        startRecognition();
+      }).catch(function(err){
+        setStatus(ERR_MSG['not-allowed']+'（'+err.name+'）');
+      });
+    }else{
+      startRecognition();
+    }
   });
   $('addBtn').addEventListener('click',function(){add($('inp').value);$('inp').value='';});
   $('inp').addEventListener('keydown',function(e){if(e.key==='Enter'){add($('inp').value);$('inp').value='';}});
