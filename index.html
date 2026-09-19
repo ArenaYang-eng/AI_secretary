@@ -21,13 +21,15 @@
   .btn:active { background:#eee; }
   .btn-icon { width:56px; height:56px; flex:none; transition: all 0.2s; }
   .btn-add { height:56px; padding:0 20px; font-size:18px; font-weight:600; background:#1a1a1a; color:#fff; border-color:#1a1a1a; }
-  /* 修改監聽中按鈕的樣式，讓它更明顯 */
+  
+  /* 錄音時的動態效果 */
   .btn-listening { border-color:#d03030; color:#fff; background-color: #d03030; animation: pulse 1.5s infinite; }
   @keyframes pulse {
     0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(208, 48, 48, 0.7); }
     70% { transform: scale(1.05); box-shadow: 0 0 0 10px rgba(208, 48, 48, 0); }
     100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(208, 48, 48, 0); }
   }
+  
   .status { min-height:22px; font-size:15px; color:#666; margin-bottom:8px; transition: color 0.3s;}
   .status.warning { color: #d03030; font-weight: bold; }
   .sec { margin-top:16px; }
@@ -82,7 +84,7 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     <div class="sec-title">備忘錄 <span class="cnt" id="noteCnt"></span></div>
     <div id="noteList"></div>
   </div>
-  <div class="hint">小秘書說明：資料只保存在這台裝置上。「提醒」到時間會變紅色響鈴。語音功能需要在 Chrome / Edge 瀏覽器開啟，並允許麥克風權限。</div>
+  <div class="hint">小秘書說明：資料只保存在這台裝置上。「提醒」到時間會變紅色響鈴。安卓手機請使用 Chrome 瀏覽器以確保語音功能正常運作。</div>
 </div>
 
 <script>
@@ -102,7 +104,6 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     else el.classList.remove('warning');
   }
 
-  // --- 時鐘與日期邏輯 ---
   var WEEK=['日','一','二','三','四','五','六'];
   function pad(n){return String(n).padStart(2,'0');}
   function fmtDate(d){return (d.getMonth()+1)+'/'+d.getDate()+' '+WEEK[d.getDay()]+' '+pad(d.getHours())+':'+pad(d.getMinutes());}
@@ -115,7 +116,6 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   }
   setInterval(tick,1000);
 
-  // --- 解析自然語言時間 ---
   function parseTime(text){
     var n=new Date();var t=new Date(n);var m;
     if((m=text.match(/(\d+)\s*分鐘後/))){t.setMinutes(t.getMinutes()+parseInt(m[1],10));return t;}
@@ -142,7 +142,6 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
       .replace(/\d{1,2}\s*[點:：]\s*\d{0,2}\s*(分)?/g,'').replace(/\d+\s*(分鐘|小時)後/g,'').trim();
   }
 
-  // --- 新增待辦事項 ---
   function add(text){
     text=(text||'').trim();
     if(!text)return;
@@ -165,7 +164,6 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     save();render();
   }
 
-  // --- 畫面渲染與交互 ---
   function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML;}
   var DEL='<button class="del" aria-label="刪除"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/></svg></button>';
   
@@ -207,14 +205,13 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     });
   }
 
-  // --- 提醒檢查 ---
   var notified={};
   function checkDue(){
     var now=Date.now();
     state.reminders.forEach(function(x){
       if(!x.done&&x.due<=now&&!notified[x.id]){
         notified[x.id]=true;
-        setStatus('時間到：'+x.text, true); // 顯示為紅色
+        setStatus('時間到：'+x.text, true); 
         if('Notification' in window&&Notification.permission==='granted'){
           try{new Notification('小秘書提醒',{body:x.text});}catch(e){}
         }
@@ -224,26 +221,26 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     if(soon)render();
   }
 
-  // --- 語音辨識核心邏輯 (Android 修復版) ---
+  // --- 優化後的語音辨識邏輯 ---
   var rec = null;
   var listening = false;
-  var isStarting = false; // 防止連按導致的狀態混亂
+  var isStarting = false;
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   
-  // 更新錯誤訊息
   var ERR_MSG={
-    'not-allowed':'麥克風權限未開啟。請到「設定 → 應用程式 → Chrome → 權限」開啟麥克風。',
-    'service-not-allowed':'系統不允許語音服務，請確認手機 Google App 已啟用。',
+    'not-allowed':'麥克風權限未開啟。',
+    'service-not-allowed':'系統不允許語音服務。',
     'audio-capture':'找不到麥克風，請確認沒有其他 App 正在錄音。',
-    'network':'請檢查網路連線。語音辨識需要網路。',
+    'network':'請檢查網路連線。',
     'no-speech':'沒聽到聲音，請再試一次。',
-    'aborted':'語音中斷。若持續發生，請嘗試更新 Chrome 瀏覽器。'
+    'aborted':'語音被中斷。'
   };
 
   function startRecognition(){
     rec = new SR();
     rec.lang = 'zh-TW';
-    rec.interimResults = false;
+    // 【關鍵修改】：開啟即時辨識功能，文字會隨著講話同步出現
+    rec.interimResults = true; 
     rec.maxAlternatives = 1;
     
     rec.onstart = function(){
@@ -251,13 +248,14 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
       listening = true;
       $('micBtn').classList.add('btn-listening');
       setStatus('請說話，我聽著呢…', false);
+      $('inp').value = ''; // 開始錄音時先清空輸入框
     };
     
     rec.onend = function(){
       isStarting = false;
       listening = false;
       $('micBtn').classList.remove('btn-listening');
-      // 如果結束時狀態還是請說話，就清空
+      
       if($('status').textContent.indexOf('請說話') === 0){
           setStatus('語音結束。', false);
       }
@@ -267,21 +265,38 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
       isStarting = false;
       listening = false;
       $('micBtn').classList.remove('btn-listening');
-      
       var errMsg = ERR_MSG[e.error] || ('發生錯誤：' + e.error);
-      
-      // 針對 aborted 錯誤給予更詳細的說明
-      if (e.error === 'aborted') {
-          errMsg = "語音被系統中斷。建議：1.確保使用 Chrome 開啟。2.等待鍵盤完全收起後再按。";
-      }
-
       setStatus(errMsg, true);
     };
     
     rec.onresult = function(e){
-      var t = e.results[0][0].transcript;
-      $('inp').value = t;
-      add(t);
+      var final_txt = '';
+      var interim_txt = '';
+
+      // 分辨哪些是「已經確定」的字，哪些是「還在猜」的字
+      for (var i = e.resultIndex; i < e.results.length; ++i) {
+        if (e.results[i].isFinal) {
+          final_txt += e.results[i][0].transcript;
+        } else {
+          interim_txt += e.results[i][0].transcript;
+        }
+      }
+
+      // 即時把聽到的片段放進輸入框 (所見即所得)
+      if (interim_txt) {
+          $('inp').value = interim_txt;
+      }
+
+      // 如果這句話說完了 (系統判定為 final)
+      if (final_txt) {
+          $('inp').value = final_txt; // 先顯示完整文字
+          add(final_txt);             // 直接加入清單
+          
+          // 延遲 0.8 秒後清空輸入框，讓使用者的眼睛能確認最後的字
+          setTimeout(function(){
+              if($('inp').value === final_txt) $('inp').value = '';
+          }, 800);
+      }
     };
     
     try {
@@ -289,15 +304,12 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     } catch(e) {
       isStarting = false;
       $('micBtn').classList.remove('btn-listening');
-      setStatus('無法啟動麥克風，請重整頁面後再試。', true);
+      setStatus('麥克風啟動失敗。', true);
     }
   }
 
-  // 麥克風按鈕點擊事件
   $('micBtn').addEventListener('click', function(e){
     e.preventDefault(); 
-    
-    // 強制隱藏手機虛擬鍵盤，避免畫面縮放干擾語音 API
     $('inp').blur(); 
 
     if(!SR){
@@ -305,7 +317,6 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
       return;
     }
     
-    // 正在辨識，或正在準備啟動中，則停止
     if(listening || isStarting){
       if(rec) {
           try { rec.stop(); } catch(err){}
@@ -321,8 +332,7 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     isStarting = true;
     setStatus('準備語音中...', false);
     
-    // 關鍵修復：延遲 400 毫秒
-    // 等待 Android 系統的鍵盤收合動畫完成、畫面穩定後再啟動
+    // 延遲 0.4 秒，等待鍵盤動畫收起，避免 aborted 錯誤
     setTimeout(function(){
       startRecognition();
     }, 400); 
@@ -331,7 +341,6 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   $('addBtn').addEventListener('click',function(){add($('inp').value);$('inp').value='';});
   $('inp').addEventListener('keydown',function(e){if(e.key==='Enter'){add($('inp').value);$('inp').value='';}});
   
-  // 初始化
   tick();
   render();
 })();
