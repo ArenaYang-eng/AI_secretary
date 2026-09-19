@@ -1,204 +1,4 @@
-<!DOCTYPE html>
-<html lang="zh-Hant">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="theme-color" content="#ffffff">
-<title>AI 隨身小秘書</title>
-<style>
-  * { box-sizing: border-box; }
-  body { font-family: -apple-system, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif; margin:0; background:#fafafa; color:#1a1a1a; }
-  #app { max-width:640px; margin:0 auto; padding:16px; }
-  button, input { font:inherit; }
-  .head { text-align:center; padding:8px 0 4px; }
-  .clock { font-size:44px; font-weight:600; line-height:1.1; font-variant-numeric:tabular-nums; }
-  .date { font-size:17px; color:#666; margin-top:4px; }
-  .week { display:inline-block; margin-left:8px; padding:2px 10px; border-radius:6px; background:#fde8e8; font-size:14px; }
-  .inputbar { display:flex; gap:8px; margin:16px 0 8px; }
-  .inputbar input { flex:1; min-width:0; font-size:20px; padding:14px 16px; border-radius:12px; border:2px solid #ccc; background:#fff; }
-  .inputbar input:focus { outline:none; border-color:#1a1a1a; }
-  .btn { border:2px solid #ccc; background:#fff; color:#1a1a1a; border-radius:12px; cursor:pointer; display:flex; align-items:center; justify-content:center; touch-action: manipulation; }
-  .btn:active { background:#eee; }
-  .btn-icon { width:56px; height:56px; flex:none; }
-  .btn-add { height:56px; padding:0 20px; font-size:18px; font-weight:600; background:#1a1a1a; color:#fff; border-color:#1a1a1a; }
-  .btn-listening { border-color:#d03030; color:#d03030; background: #fff0f0; }
-  .status { min-height:22px; font-size:15px; color:#666; margin-bottom:8px; word-break: break-all; }
-  .status.warning { color: #d03030; font-weight: 500; }
-  .sec { margin-top:16px; }
-  .sec-title { font-size:18px; font-weight:600; display:flex; align-items:center; gap:8px; margin-bottom:8px; }
-  .sec-title .cnt { font-size:14px; color:#888; font-weight:400; }
-  .empty { font-size:15px; color:#aaa; padding:12px 4px; }
-  .row { display:flex; align-items:center; gap:12px; padding:12px; border-radius:10px; border:1px solid #ddd; margin-bottom:8px; background:#fff; }
-  .row .cbx { width:28px; height:28px; flex:none; cursor:pointer; accent-color:#1a1a1a; }
-  .row .body { flex:1; min-width:0; }
-  .row .txt { font-size:19px; }
-  .row.done .txt { text-decoration:line-through; color:#aaa; }
-  .row .meta { font-size:14px; color:#777; margin-top:2px; font-variant-numeric:tabular-nums; }
-  .row.due { border-color:#d03030; background:#fdeeee; }
-  .row.due .meta { color:#d03030; font-weight:600; }
-  .row .del { opacity:0; flex:none; width:40px; height:40px; border:none; background:transparent; color:#999; cursor:pointer; border-radius:8px; align-items:center; justify-content:center; display:flex; }
-  .row:hover .del, .row:focus-within .del { opacity:1; }
-  .del:hover { color:#d03030; background:#f8d7d7; }
-  .hint { font-size:13px; color:#999; margin-top:14px; line-height:1.7; }
-</style>
-<link rel="manifest" href="manifest.json">
-<link rel="apple-touch-icon" href="icon-192.png">
-<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
-<meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta name="apple-mobile-web-app-title" content="小秘書">
-<script>
-if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
-  navigator.serviceWorker.register('sw.js').catch(function(){});
-}
-</script>
-</head>
-<body>
-<div id="app">
-  <div class="head">
-    <div class="clock" id="clock">--:--:--</div>
-    <div class="date"><span id="dateTxt"></span><span class="week" id="weekTxt"></span></div>
-  </div>
-  <div class="inputbar">
-    <button class="btn btn-icon" id="micBtn" aria-label="語音輸入">
-      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg>
-    </button>
-    <input id="inp" placeholder="打字或按麥克風說話…" autocomplete="off">
-    <button class="btn btn-add" id="addBtn">記下來</button>
-  </div>
-  <div class="status" id="status">可以這樣說：「提醒我明天早上8點吃藥」、「記得繳水費」</div>
-  <div class="sec">
-    <div class="sec-title">提醒事項 <span class="cnt" id="remCnt"></span></div>
-    <div id="remList"></div>
-  </div>
-  <div class="sec">
-    <div class="sec-title">備忘錄 <span class="cnt" id="noteCnt"></span></div>
-    <div id="noteList"></div>
-  </div>
-  <div class="hint">小秘書說明：資料只保存在這台裝置上。「提醒」到時間會變紅色響鈴。安卓手機請使用 Chrome 瀏覽器以確保語音功能正常運作。</div>
-</div>
-<script>
-(function(){
-  var LS_KEY='kimi_secretary_v1';
-  var state={reminders:[],notes:[]};
-  try{var s=JSON.parse(localStorage.getItem(LS_KEY));if(s)state=s;}catch(e){}
-  function save(){try{localStorage.setItem(LS_KEY,JSON.stringify(state));}catch(e){}}
-  var $=function(id){return document.getElementById(id);};
-  var WEEK=['日','一','二','三','四','五','六'];
-  
-  function pad(n){return String(n).padStart(2,'0');}
-  function fmtDate(d){return (d.getMonth()+1)+'/'+d.getDate()+' '+WEEK[d.getDay()]+' '+pad(d.getHours())+':'+pad(d.getMinutes());}
-  function tick(){
-    var n=new Date();
-    $('clock').textContent=pad(n.getHours())+':'+pad(n.getMinutes())+':'+pad(n.getSeconds());
-    $('dateTxt').textContent=n.getFullYear()+'年'+(n.getMonth()+1)+'月'+n.getDate()+'日';
-    $('weekTxt').textContent='星期'+WEEK[n.getDay()];
-    checkDue();
-  }
-  setInterval(tick,1000);
-  
-  function parseTime(text){
-    var n=new Date();var t=new Date(n);var m;
-    if((m=text.match(/(\d+)\s*分鐘後/))){t.setMinutes(t.getMinutes()+parseInt(m[1],10));return t;}
-    if((m=text.match(/半小時後/))){t.setMinutes(t.getMinutes()+30);return t;}
-    if((m=text.match(/(\d+)\s*小時後/))){t.setHours(t.getHours()+parseInt(m[1],10));return t;}
-    if(text.indexOf('明天')>-1)t.setDate(t.getDate()+1);
-    var hour=null,min=0;
-    var hm=text.match(/(\d{1,2})\s*[點:：]\s*(\d{1,2})?/);
-    if(hm){hour=parseInt(hm[1],10);if(hm[2])min=parseInt(hm[2],10);}
-    else if((m=text.match(/(\d{1,2})\s*點/))){hour=parseInt(m[1],10);}
-    if(hour===null){
-      if(/今晚|晚上/.test(text)){hour=19;min=0;}
-      else if(/中午/.test(text)){hour=12;min=0;}
-      else return null;
-    }
-    if(/下午|晚上|今晚/.test(text)&&hour<12)hour+=12;
-    t.setHours(hour,min,0,0);
-    if(t<n&&text.indexOf('明天')===-1)t.setDate(t.getDate()+1);
-    return t;
-  }
-  
-  function stripTimeWords(text){
-    return text.replace(/(請|幫我|記得)?提醒我/g,'').replace(/(明天|今天|今晚|早上|上午|中午|下午|晚上)/g,'')
-      .replace(/\d{1,2}\s*[點:：]\s*\d{0,2}\s*(分)?/g,'').replace(/\d+\s*(分鐘|小時)後/g,'').trim();
-  }
-  function add(text){
-    text=(text||'').trim();
-    if(!text)return;
-    var isRem=/提醒我|記得提醒|鬧鐘/.test(text);
-    if(isRem){
-      var due=parseTime(text);
-      var title=stripTimeWords(text)||'提醒';
-      if(!due){setStatus('聽不太懂時間，改存到備忘錄囉');state.notes.unshift({id:Date.now(),text:text,done:false});}
-      else{
-        state.reminders.unshift({id:Date.now(),text:title,due:due.getTime(),done:false});
-        setStatus('好的，已設定提醒：'+title+'（'+fmtDate(due)+'）');
-        if('Notification' in window&&Notification.permission==='default')Notification.requestPermission();
-      }
-    }else{
-      state.notes.unshift({id:Date.now(),text:text.replace(/^(請|幫我)?(記下|記得|記住)/,''),done:false});
-      setStatus('好的，已記在備忘錄');
-    }
-    save();render();
-  }
-  
-  function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML;}
-  var DEL='<button class="del" aria-label="刪除"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/></svg></button>';
-  function rowHTML(item,isRem){
-    if(isRem){
-      var diff=item.due-Date.now();
-      var dueCls=(!item.done&&diff<=0)?' due':'';
-      var label;
-      if(item.done)label='已完成';
-      else if(diff<=0)label='時間到！';
-      else if(diff<3600000)label=Math.ceil(diff/60000)+' 分鐘後';
-      else if(diff<86400000)label=Math.round(diff/3600000)+' 小時後 · '+fmtDate(new Date(item.due));
-      else label=fmtDate(new Date(item.due));
-      return '<div class="row'+dueCls+(item.done?' done':'')+'" data-id="'+item.id+'"><input type="checkbox" class="cbx" '+(item.done?'checked':'')+'><div class="body"><div class="txt">'+esc(item.text)+'</div><div class="meta">'+label+'</div></div>'+DEL+'</div>';
-    }
-    return '<div class="row'+(item.done?' done':'')+'" data-id="'+item.id+'"><input type="checkbox" class="cbx" '+(item.done?'checked':'')+'><div class="body"><div class="txt">'+esc(item.text)+'</div></div>'+DEL+'</div>';
-  }
-  function render(){
-    var r=state.reminders,nt=state.notes;
-    $('remCnt').textContent=r.length?'（未完成 '+r.filter(function(x){return !x.done}).length+'）':'';
-    $('noteCnt').textContent=nt.length?'（共 '+nt.length+' 筆）':'';
-    $('remList').innerHTML=r.length?r.map(function(x){return rowHTML(x,true)}).join(''):'<div class="empty">還沒有提醒。可以說：「提醒我明天早上8點吃藥」</div>';
-    $('noteList').innerHTML=nt.length?nt.map(function(x){return rowHTML(x,false)}).join(''):'<div class="empty">還沒有備忘。可以說：「記得繳水費」</div>';
-    Array.prototype.forEach.call(document.querySelectorAll('.row'),function(row){
-      var id=+row.getAttribute('data-id');
-      var isRem=!!row.querySelector('.meta');
-      row.querySelector('.cbx').addEventListener('change',function(){
-        var list=isRem?state.reminders:state.notes;
-        list.forEach(function(x){if(x.id===id)x.done=!x.done;});
-        save();render();
-      });
-      row.querySelector('.del').addEventListener('click',function(){
-        state.reminders=state.reminders.filter(function(x){return x.id!==id});
-        state.notes=state.notes.filter(function(x){return x.id!==id});
-        save();render();setStatus('已刪除');
-      });
-    });
-  }
-  
-  var notified={};
-  function checkDue(){
-    var now=Date.now();
-    state.reminders.forEach(function(x){
-      if(!x.done&&x.due<=now&&!notified[x.id]){
-        notified[x.id]=true;setStatus('時間到：'+x.text);
-        if('Notification' in window&&Notification.permission==='granted'){
-          try{new Notification('小秘書提醒',{body:x.text});}catch(e){}
-        }
-      }
-    });
-    var soon=state.reminders.some(function(x){return !x.done&&x.due-now<86400000;});
-    if(soon)render();
-  }
-  
-  var rec=null, listening=false, isStarting=false;
-  var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-  
+<!-- ... existing code ... -->
   // 針對 Android 中斷問題更新錯誤提示
   var ERR_MSG={
     'not-allowed':'麥克風權限被封鎖。請到手機「設定 → App → 權限 → 麥克風」確認為「允許」。',
@@ -206,90 +6,60 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     'audio-capture':'抓不到麥克風，請確認沒有其他 App 正在使用。',
     'network':'語音辨識需要連網才能運作，請確認網路連線。',
     'no-speech':'沒有聽到聲音，請靠近一點再說一次。',
-    'aborted':'語音被中斷。若是手機，請務必使用「系統預設瀏覽器(Chrome)」開啟 (LINE/FB/IG 內建瀏覽器不支援語音)。'
+    'aborted':'語音被中斷。請稍等一下再按。若持續發生，請確認手機「Google」App 的麥克風權限已開啟。'
   };
 
   var ua = navigator.userAgent || '';
-  var isInApp = /Line|FBAN|FBAV|Instagram/i.test(ua);
-  if (isInApp) {
-    setTimeout(function(){
-      var st = $('status');
-      st.textContent = '⚠️ 您似乎正使用 LINE/FB 內建瀏覽器，語音功能會被阻擋。請按右上角「以預設瀏覽器(Chrome)開啟」來使用語音。';
-      st.classList.add('warning');
-    }, 1500);
+<!-- ... existing code ... -->
   }
   
   function startRecognition(){
-    if(isStarting) return;
-    isStarting = true; // 防止重複觸發
-    
     rec=new SR();
     rec.lang='zh-TW';
     rec.interimResults=false;
     rec.maxAlternatives=1;
     
     rec.onstart=function(){
-      isStarting=false;
-      listening=true;
-      $('micBtn').classList.add('btn-listening');
+<!-- ... existing code ... -->
+      };
+      
+      try{
+        rec.start();
+      }catch(e){
+        isStarting=false;
+        $('micBtn').classList.remove('btn-listening');
+        setStatus('麥克風啟動失敗，請檢查權限或用打字');
+      }
+    }
+    
+    $('micBtn').addEventListener('click',function(e){
+      e.preventDefault(); // 防止手機出現 Ghost Click (雙重點擊)
+      $('inp').blur(); // 隱藏手機鍵盤
+  
+      if(!SR){
+        setStatus('這個瀏覽器不支援語音，請用 Chrome 或打字輸入');
+        return;
+      }
+      
+      if((listening || isStarting) && rec){
+        try{ rec.stop(); }catch(err){}
+        return;
+      }
+      
+      if(!navigator.onLine){
+        setStatus('目前沒有網路連線，請改用打字');
+        return;
+      }
+      
+      // Android Chrome 修正：給予畫面縮放(鍵盤收合)的緩衝時間
+      isStarting = true;
       $('status').classList.remove('warning');
-      setStatus('🎤 請說話，我聽著呢…（再按一次停止）');
-    };
-    rec.onend=function(){
-      isStarting=false;
-      listening=false;
-      $('micBtn').classList.remove('btn-listening');
-    };
-    rec.onerror=function(e){
-      isStarting=false;
-      listening=false;
-      $('micBtn').classList.remove('btn-listening');
-      var msg=ERR_MSG[e.error]||('語音發生錯誤（'+e.error+'），請再試一次');
-      setStatus(msg);
-      if(e.error === 'aborted') $('status').classList.add('warning');
-    };
-    rec.onresult=function(e){
-      var t=e.results[0][0].transcript;
-      $('inp').value=t;
-      add(t);
-    };
+      setStatus('準備語音中...');
+      
+      setTimeout(function(){
+        startRecognition();
+      }, 400); // 延遲 400 毫秒等 UI 穩定後再啟動語音
+    });
     
-    try{
-      rec.start();
-    }catch(e){
-      isStarting=false;
-      setStatus('麥克風啟動失敗，請檢查權限或用打字');
-    }
-  }
-  
-  $('micBtn').addEventListener('click',function(e){
-    e.preventDefault(); // 防止手機出現 Ghost Click (雙重點擊)
-    $('inp').blur(); // 隱藏手機鍵盤！避免鍵盤收合導致版面縮放，引發 Android 強制中斷 (aborted)
-
-    if(!SR){
-      setStatus('這個瀏覽器不支援語音，請用 Chrome 或打字輸入');
-      return;
-    }
-    
-    if((listening || isStarting) && rec){
-      try{ rec.stop(); }catch(err){}
-      return;
-    }
-    
-    if(!navigator.onLine){
-      setStatus('目前沒有網路連線，語音辨識需要連網，請改用打字');
-      return;
-    }
-    
-    startRecognition();
-  });
-  
-  $('addBtn').addEventListener('click',function(){add($('inp').value);$('inp').value='';});
-  $('inp').addEventListener('keydown',function(e){if(e.key==='Enter'){add($('inp').value);$('inp').value='';}});
-  function setStatus(s){$('status').textContent=s;}
-  
-  tick();render();
-})();
-</script>
-</body>
-</html>
+    $('addBtn').addEventListener('click',function(){add($('inp').value);$('inp').value='';});
+<!-- ... existing code ... -->
