@@ -21,15 +21,12 @@
   .btn:active { background:#eee; }
   .btn-icon { width:56px; height:56px; flex:none; transition: all 0.2s; }
   .btn-add { height:56px; padding:0 20px; font-size:18px; font-weight:600; background:#1a1a1a; color:#fff; border-color:#1a1a1a; }
-  
-  /* 錄音時的動態效果 */
   .btn-listening { border-color:#d03030; color:#fff; background-color: #d03030; animation: pulse 1.5s infinite; }
   @keyframes pulse {
     0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(208, 48, 48, 0.7); }
     70% { transform: scale(1.05); box-shadow: 0 0 0 10px rgba(208, 48, 48, 0); }
     100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(208, 48, 48, 0); }
   }
-  
   .status { min-height:22px; font-size:15px; color:#666; margin-bottom:8px; transition: color 0.3s;}
   .status.warning { color: #d03030; font-weight: bold; }
   .sec { margin-top:16px; }
@@ -84,7 +81,7 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     <div class="sec-title">備忘錄 <span class="cnt" id="noteCnt"></span></div>
     <div id="noteList"></div>
   </div>
-  <div class="hint">小秘書說明：資料只保存在這台裝置上。「提醒」到時間會變紅色響鈴。安卓手機請使用 Chrome 瀏覽器以確保語音功能正常運作。</div>
+  <div class="hint">小秘書說明：資料只保存在這台裝置上。「提醒」到時間會變紅色並發出聲音。安卓手機請使用 Chrome 瀏覽器，並保持畫面開啟以確保提醒運作。</div>
 </div>
 
 <script>
@@ -104,6 +101,57 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     else el.classList.remove('warning');
   }
 
+  // --- 音效與震動引擎 ---
+  var audioCtx = null;
+  function initAudio() {
+    if (audioCtx) return;
+    try {
+      var AudioContext = window.AudioContext || window.webkitAudioContext;
+      audioCtx = new AudioContext();
+    } catch(e) { console.log('音訊不支援', e); }
+  }
+
+  function playAlarmSound() {
+    if (!audioCtx) return;
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    
+    // 播放三聲短促的嗶嗶聲
+    [0, 0.4, 0.8].forEach(function(delay) {
+      var osc = audioCtx.createOscillator();
+      var gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(880, audioCtx.currentTime + delay); // A5 頻率
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      
+      gain.gain.setValueAtTime(0, audioCtx.currentTime + delay);
+      gain.gain.linearRampToValueAtTime(0.3, audioCtx.currentTime + delay + 0.05);
+      gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + delay + 0.3);
+      
+      osc.start(audioCtx.currentTime + delay);
+      osc.stop(audioCtx.currentTime + delay + 0.3);
+    });
+  }
+
+  function triggerAlarm() {
+    // 1. 震動 (Android 支援，iOS 不支援)
+    if ('vibrate' in navigator) {
+      navigator.vibrate([500, 200, 500, 200, 1000]);
+    }
+    // 2. 播放聲音
+    playAlarmSound();
+    // 3. 發送系統通知
+    if('Notification' in window && Notification.permission === 'granted'){
+      try {
+        new Notification('⏰ 小秘書提醒', {
+          body: state.reminders.find(function(x){return x.due <= Date.now() && !x.done;}).text,
+          requireInteraction: true // 嘗試讓通知停留久一點
+        });
+      } catch(e){}
+    }
+  }
+
+  // --- 時鐘與日期邏輯 ---
   var WEEK=['日','一','二','三','四','五','六'];
   function pad(n){return String(n).padStart(2,'0');}
   function fmtDate(d){return (d.getMonth()+1)+'/'+d.getDate()+' '+WEEK[d.getDay()]+' '+pad(d.getHours())+':'+pad(d.getMinutes());}
@@ -116,6 +164,7 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   }
   setInterval(tick,1000);
 
+  // --- 解析自然語言時間 ---
   function parseTime(text){
     var n=new Date();var t=new Date(n);var m;
     if((m=text.match(/(\d+)\s*分鐘後/))){t.setMinutes(t.getMinutes()+parseInt(m[1],10));return t;}
@@ -142,6 +191,7 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
       .replace(/\d{1,2}\s*[點:：]\s*\d{0,2}\s*(分)?/g,'').replace(/\d+\s*(分鐘|小時)後/g,'').trim();
   }
 
+  // --- 新增待辦事項 ---
   function add(text){
     text=(text||'').trim();
     if(!text)return;
@@ -155,7 +205,7 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
       }else{
         state.reminders.unshift({id:Date.now(),text:title,due:due.getTime(),done:false});
         setStatus('好的，已設定提醒：'+title+'（'+fmtDate(due)+'）', false);
-        if('Notification' in window&&Notification.permission==='default')Notification.requestPermission();
+        if('Notification' in window && Notification.permission==='default')Notification.requestPermission();
       }
     }else{
       state.notes.unshift({id:Date.now(),text:text.replace(/^(請|幫我)?(記下|記得|記住)/,''),done:false});
@@ -164,6 +214,7 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     save();render();
   }
 
+  // --- 畫面渲染與交互 ---
   function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML;}
   var DEL='<button class="del" aria-label="刪除"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/></svg></button>';
   
@@ -205,23 +256,22 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     });
   }
 
+  // --- 提醒檢查 ---
   var notified={};
   function checkDue(){
     var now=Date.now();
     state.reminders.forEach(function(x){
-      if(!x.done&&x.due<=now&&!notified[x.id]){
-        notified[x.id]=true;
-        setStatus('時間到：'+x.text, true); 
-        if('Notification' in window&&Notification.permission==='granted'){
-          try{new Notification('小秘書提醒',{body:x.text});}catch(e){}
-        }
+      if(!x.done && x.due <= now && !notified[x.id]){
+        notified[x.id] = true;
+        setStatus('時間到：' + x.text, true); 
+        triggerAlarm(); // 觸發震動、聲音與通知
       }
     });
-    var soon=state.reminders.some(function(x){return !x.done&&x.due-now<86400000;});
-    if(soon)render();
+    var soon=state.reminders.some(function(x){return !x.done && x.due-now < 86400000;});
+    if(soon) render();
   }
 
-  // --- 優化後的語音辨識邏輯 ---
+  // --- 語音辨識邏輯 ---
   var rec = null;
   var listening = false;
   var isStarting = false;
@@ -239,8 +289,7 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   function startRecognition(){
     rec = new SR();
     rec.lang = 'zh-TW';
-    // 【關鍵修改】：開啟即時辨識功能，文字會隨著講話同步出現
-    rec.interimResults = true; 
+    rec.interimResults = true;
     rec.maxAlternatives = 1;
     
     rec.onstart = function(){
@@ -248,16 +297,21 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
       listening = true;
       $('micBtn').classList.add('btn-listening');
       setStatus('請說話，我聽著呢…', false);
-      $('inp').value = ''; // 開始錄音時先清空輸入框
+      $('inp').value = '';
     };
     
     rec.onend = function(){
       isStarting = false;
       listening = false;
       $('micBtn').classList.remove('btn-listening');
-      
+      var leftover = $('inp').value.trim();
+      if (leftover && !$('inp').dataset.added) {
+        add(leftover);
+        $('inp').value = '';
+      }
+      $('inp').dataset.added = '';
       if($('status').textContent.indexOf('請說話') === 0){
-          setStatus('語音結束。', false);
+        setStatus('語音結束。', false);
       }
     };
     
@@ -270,32 +324,26 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     };
     
     rec.onresult = function(e){
-      var final_txt = '';
-      var interim_txt = '';
-
-      // 分辨哪些是「已經確定」的字，哪些是「還在猜」的字
-      for (var i = e.resultIndex; i < e.results.length; ++i) {
-        if (e.results[i].isFinal) {
-          final_txt += e.results[i][0].transcript;
-        } else {
-          interim_txt += e.results[i][0].transcript;
-        }
+      var allTxt = '';
+      var hasFinal = false;
+      for (var i = 0; i < e.results.length; i++) {
+        var r = e.results[i];
+        if (r[0] && r[0].transcript) { allTxt += r[0].transcript; }
+        if (r.isFinal) hasFinal = true;
       }
-
-      // 即時把聽到的片段放進輸入框 (所見即所得)
-      if (interim_txt) {
-          $('inp').value = interim_txt;
+      if (allTxt) {
+        $('inp').value = allTxt;
+        setStatus('辨識中：' + allTxt, false);
       }
-
-      // 如果這句話說完了 (系統判定為 final)
-      if (final_txt) {
-          $('inp').value = final_txt; // 先顯示完整文字
-          add(final_txt);             // 直接加入清單
-          
-          // 延遲 0.8 秒後清空輸入框，讓使用者的眼睛能確認最後的字
-          setTimeout(function(){
-              if($('inp').value === final_txt) $('inp').value = '';
-          }, 800);
+      if (hasFinal && allTxt) {
+        $('inp').dataset.added = '1';
+        add(allTxt);
+        setTimeout(function(){
+          if($('inp').value === allTxt) {
+            $('inp').value = '';
+            $('inp').dataset.added = '';
+          }
+        }, 1000);
       }
     };
     
@@ -311,35 +359,31 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   $('micBtn').addEventListener('click', function(e){
     e.preventDefault(); 
     $('inp').blur(); 
+    initAudio(); // 點擊麥克風時解鎖音訊
 
-    if(!SR){
-      setStatus('此瀏覽器不支援語音輸入。', true);
-      return;
-    }
-    
-    if(listening || isStarting){
-      if(rec) {
-          try { rec.stop(); } catch(err){}
-      }
-      return;
-    }
-    
-    if(!navigator.onLine){
-      setStatus('沒有網路連線，無法使用語音。', true);
-      return;
-    }
+    if(!SR){ setStatus('此瀏覽器不支援語音輸入。', true); return; }
+    if(listening || isStarting){ if(rec) { try { rec.stop(); } catch(err){} } return; }
+    if(!navigator.onLine){ setStatus('沒有網路連線，無法使用語音。', true); return; }
     
     isStarting = true;
     setStatus('準備語音中...', false);
-    
-    // 延遲 0.4 秒，等待鍵盤動畫收起，避免 aborted 錯誤
-    setTimeout(function(){
-      startRecognition();
-    }, 400); 
+    setTimeout(function(){ startRecognition(); }, 400); 
   });
 
-  $('addBtn').addEventListener('click',function(){add($('inp').value);$('inp').value='';});
-  $('inp').addEventListener('keydown',function(e){if(e.key==='Enter'){add($('inp').value);$('inp').value='';}});
+  // 點擊按鈕時解鎖音訊
+  $('addBtn').addEventListener('click',function(){
+    initAudio(); 
+    add($('inp').value);
+    $('inp').value='';
+  });
+  
+  $('inp').addEventListener('keydown',function(e){
+    if(e.key==='Enter'){
+      initAudio();
+      add($('inp').value);
+      $('inp').value='';
+    }
+  });
   
   tick();
   render();
