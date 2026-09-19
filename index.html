@@ -81,7 +81,7 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     <div class="sec-title">備忘錄 <span class="cnt" id="noteCnt"></span></div>
     <div id="noteList"></div>
   </div>
-  <div class="hint">小秘書說明：資料只保存在這台裝置上。「提醒」到時間會變紅色並發出聲音。安卓手機請使用 Chrome 瀏覽器，並保持畫面開啟以確保提醒運作。</div>
+  <div class="hint">小秘書說明：資料只保存在這台裝置上。「提醒」到時間會變紅色並發出聲音。安卓手機若無法網頁語音輸入，請直接使用鍵盤上的麥克風圖示。</div>
 </div>
 
 <script>
@@ -100,6 +100,9 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     if(isError) el.classList.add('warning');
     else el.classList.remove('warning');
   }
+
+  // 偵測是否為 Android 系統 (HyperOS 等 Android 手機可能無法使用網頁語音 API)
+  var isAndroid = /Android/i.test(navigator.userAgent);
 
   // --- 音效與震動引擎 ---
   var audioCtx = null;
@@ -120,7 +123,7 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
       var osc = audioCtx.createOscillator();
       var gain = audioCtx.createGain();
       osc.type = 'sine';
-      osc.frequency.setValueAtTime(880, audioCtx.currentTime + delay); // A5 頻率
+      osc.frequency.setValueAtTime(880, audioCtx.currentTime + delay);
       osc.connect(gain);
       gain.connect(audioCtx.destination);
       
@@ -134,18 +137,15 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   }
 
   function triggerAlarm() {
-    // 1. 震動 (Android 支援，iOS 不支援)
     if ('vibrate' in navigator) {
       navigator.vibrate([500, 200, 500, 200, 1000]);
     }
-    // 2. 播放聲音
     playAlarmSound();
-    // 3. 發送系統通知
     if('Notification' in window && Notification.permission === 'granted'){
       try {
         new Notification('⏰ 小秘書提醒', {
           body: state.reminders.find(function(x){return x.due <= Date.now() && !x.done;}).text,
-          requireInteraction: true // 嘗試讓通知停留久一點
+          requireInteraction: true
         });
       } catch(e){}
     }
@@ -264,14 +264,14 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
       if(!x.done && x.due <= now && !notified[x.id]){
         notified[x.id] = true;
         setStatus('時間到：' + x.text, true); 
-        triggerAlarm(); // 觸發震動、聲音與通知
+        triggerAlarm();
       }
     });
     var soon=state.reminders.some(function(x){return !x.done && x.due-now < 86400000;});
     if(soon) render();
   }
 
-  // --- 語音辨識邏輯 ---
+  // --- 語音辨識邏輯 (針對 Android 優化) ---
   var rec = null;
   var listening = false;
   var isStarting = false;
@@ -304,14 +304,20 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
       isStarting = false;
       listening = false;
       $('micBtn').classList.remove('btn-listening');
+      
       var leftover = $('inp').value.trim();
       if (leftover && !$('inp').dataset.added) {
         add(leftover);
         $('inp').value = '';
       }
       $('inp').dataset.added = '';
+      
       if($('status').textContent.indexOf('請說話') === 0){
-        setStatus('語音結束。', false);
+        if (isAndroid) {
+          setStatus('網頁語音未取得文字。請點擊輸入框，改用鍵盤上的麥克風輸入。', true);
+        } else {
+          setStatus('語音結束。', false);
+        }
       }
     };
     
@@ -319,8 +325,14 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
       isStarting = false;
       listening = false;
       $('micBtn').classList.remove('btn-listening');
-      var errMsg = ERR_MSG[e.error] || ('發生錯誤：' + e.error);
-      setStatus(errMsg, true);
+      
+      // 針對 Android 常見的系統阻擋給予明確引導
+      if (isAndroid && (e.error === 'service-not-allowed' || e.error === 'aborted')) {
+        setStatus('系統限制網頁語音。請點擊輸入框，改用鍵盤上的麥克風輸入。', true);
+      } else {
+        var errMsg = ERR_MSG[e.error] || ('發生錯誤：' + e.error);
+        setStatus(errMsg, true);
+      }
     };
     
     rec.onresult = function(e){
@@ -352,18 +364,31 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     } catch(e) {
       isStarting = false;
       $('micBtn').classList.remove('btn-listening');
-      setStatus('麥克風啟動失敗。', true);
+      if (isAndroid) {
+        setStatus('無法啟動網頁語音。請改用鍵盤上的麥克風輸入。', true);
+      } else {
+        setStatus('麥克風啟動失敗。', true);
+      }
     }
   }
 
   $('micBtn').addEventListener('click', function(e){
     e.preventDefault(); 
     $('inp').blur(); 
-    initAudio(); // 點擊麥克風時解鎖音訊
+    initAudio();
 
-    if(!SR){ setStatus('此瀏覽器不支援語音輸入。', true); return; }
-    if(listening || isStarting){ if(rec) { try { rec.stop(); } catch(err){} } return; }
-    if(!navigator.onLine){ setStatus('沒有網路連線，無法使用語音。', true); return; }
+    if(!SR){ 
+      setStatus('此瀏覽器不支援網頁語音輸入，請改用鍵盤麥克風。', true); 
+      return; 
+    }
+    if(listening || isStarting){ 
+      if(rec) { try { rec.stop(); } catch(err){} } 
+      return; 
+    }
+    if(!navigator.onLine){ 
+      setStatus('沒有網路連線，無法使用語音。', true); 
+      return; 
+    }
     
     isStarting = true;
     setStatus('準備語音中...', false);
