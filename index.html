@@ -21,7 +21,6 @@
   .btn:active { background:#eee; }
   .btn-icon { width:56px; height:56px; flex:none; transition: all 0.2s; }
   .btn-add { height:56px; padding:0 20px; font-size:18px; font-weight:600; background:#1a1a1a; color:#fff; border-color:#1a1a1a; }
-  /* 修改監聽中按鈕的樣式，讓它更明顯 */
   .btn-listening { border-color:#d03030; color:#fff; background-color: #d03030; animation: pulse 1.5s infinite; }
   @keyframes pulse {
     0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(208, 48, 48, 0.7); }
@@ -214,7 +213,7 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     state.reminders.forEach(function(x){
       if(!x.done&&x.due<=now&&!notified[x.id]){
         notified[x.id]=true;
-        setStatus('時間到：'+x.text, true); // 顯示為紅色
+        setStatus('時間到：'+x.text, true);
         if('Notification' in window&&Notification.permission==='granted'){
           try{new Notification('小秘書提醒',{body:x.text});}catch(e){}
         }
@@ -224,66 +223,102 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     if(soon)render();
   }
 
-  // --- 語音辨識核心邏輯 (Android 修復版) ---
+  // --- 語音辨識核心邏輯 (Android 修復版 v2) ---
   var rec = null;
   var listening = false;
-  var isStarting = false; // 防止連按導致的狀態混亂
+  var isStarting = false;
+  var userStopped = false;   // 使用者主動停止旗標
+  var restartCount = 0;      // 自動重試次數
+  var MAX_RESTARTS = 3;      // 最多重試 3 次
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  
-  // 更新錯誤訊息
+
   var ERR_MSG={
     'not-allowed':'麥克風權限未開啟。請到「設定 → 應用程式 → Chrome → 權限」開啟麥克風。',
     'service-not-allowed':'系統不允許語音服務，請確認手機 Google App 已啟用。',
     'audio-capture':'找不到麥克風，請確認沒有其他 App 正在錄音。',
     'network':'請檢查網路連線。語音辨識需要網路。',
     'no-speech':'沒聽到聲音，請再試一次。',
-    'aborted':'語音中斷。若持續發生，請嘗試更新 Chrome 瀏覽器。'
+    'aborted':'語音被系統中斷，正在重試…'
   };
+
+  // 先取得麥克風權限，喚醒 Android 的錄音通道
+  function primeMicrophone(){
+    return new Promise(function(resolve){
+      if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+        resolve(); return;
+      }
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(function(stream){
+          stream.getTracks().forEach(function(t){ t.stop(); });
+          resolve();
+        })
+        .catch(function(){
+          // 就算失敗也讓流程繼續，讓 SpeechRecognition 自己去報錯
+          resolve();
+        });
+    });
+  }
 
   function startRecognition(){
     rec = new SR();
     rec.lang = 'zh-TW';
     rec.interimResults = false;
     rec.maxAlternatives = 1;
-    
+
     rec.onstart = function(){
       isStarting = false;
       listening = true;
       $('micBtn').classList.add('btn-listening');
       setStatus('請說話，我聽著呢…', false);
     };
-    
+
     rec.onend = function(){
       isStarting = false;
       listening = false;
       $('micBtn').classList.remove('btn-listening');
-      // 如果結束時狀態還是請說話，就清空
-      if($('status').textContent.indexOf('請說話') === 0){
-          setStatus('語音結束。', false);
+
+      // 使用者主動停止 → 不重啟
+      if(userStopped){
+        setStatus('語音結束。', false);
+        return;
+      }
+
+      // 系統中斷 → 自動重試
+      if(restartCount < MAX_RESTARTS){
+        restartCount++;
+        setStatus('語音中斷，正在重試 (' + restartCount + '/' + MAX_RESTARTS + ')…', false);
+        setTimeout(function(){
+          if(!listening && !isStarting && !userStopped){
+            startRecognition();
+          }
+        }, 500);
+      }else{
+        setStatus('語音中斷，請再按一次麥克風重試。', true);
+        restartCount = 0;
       }
     };
-    
+
     rec.onerror = function(e){
       isStarting = false;
       listening = false;
       $('micBtn').classList.remove('btn-listening');
-      
-      var errMsg = ERR_MSG[e.error] || ('發生錯誤：' + e.error);
-      
-      // 針對 aborted 錯誤給予更詳細的說明
-      if (e.error === 'aborted') {
-          errMsg = "語音被系統中斷。建議：1.確保使用 Chrome 開啟。2.等待鍵盤完全收起後再按。";
-      }
 
+      // aborted 交給 onend 處理重試，不要在這裡顯示錯誤
+      if(e.error === 'aborted') return;
+
+      var errMsg = ERR_MSG[e.error] || ('發生錯誤：' + e.error);
       setStatus(errMsg, true);
+      userStopped = true; // 發生真正的錯誤就不再自動重試
     };
-    
+
     rec.onresult = function(e){
       var t = e.results[0][0].transcript;
       $('inp').value = t;
       add(t);
+      restartCount = 0;   // 成功辨識，重試計數歸零
+      userStopped = true; // 有結果就視為完成，不再自動重啟
     };
-    
+
     try {
       rec.start();
     } catch(e) {
@@ -295,42 +330,47 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
 
   // 麥克風按鈕點擊事件
   $('micBtn').addEventListener('click', function(e){
-    e.preventDefault(); 
-    
-    // 強制隱藏手機虛擬鍵盤，避免畫面縮放干擾語音 API
-    $('inp').blur(); 
+    e.preventDefault();
+
+    // 收起鍵盤，避免畫面縮放干擾語音 API
+    $('inp').blur();
 
     if(!SR){
       setStatus('此瀏覽器不支援語音輸入。', true);
       return;
     }
-    
-    // 正在辨識，或正在準備啟動中，則停止
+
+    // 正在辨識或準備啟動中 → 視為使用者要停止
     if(listening || isStarting){
-      if(rec) {
-          try { rec.stop(); } catch(err){}
-      }
+      userStopped = true;
+      if(rec){ try { rec.stop(); } catch(err){} }
       return;
     }
-    
+
     if(!navigator.onLine){
       setStatus('沒有網路連線，無法使用語音。', true);
       return;
     }
-    
+
+    // 重置狀態
+    userStopped = false;
+    restartCount = 0;
     isStarting = true;
     setStatus('準備語音中...', false);
-    
-    // 關鍵修復：延遲 400 毫秒
-    // 等待 Android 系統的鍵盤收合動畫完成、畫面穩定後再啟動
-    setTimeout(function(){
-      startRecognition();
-    }, 400); 
+
+    // 先預熱麥克風，再延遲啟動，避開 Android 鍵盤收合動畫
+    primeMicrophone().then(function(){
+      setTimeout(function(){
+        if(isStarting && !userStopped){
+          startRecognition();
+        }
+      }, 400);
+    });
   });
 
   $('addBtn').addEventListener('click',function(){add($('inp').value);$('inp').value='';});
   $('inp').addEventListener('keydown',function(e){if(e.key==='Enter'){add($('inp').value);$('inp').value='';}});
-  
+
   // 初始化
   tick();
   render();
