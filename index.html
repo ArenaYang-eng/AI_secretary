@@ -215,18 +215,7 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     if(!SR){setStatus('這個瀏覽器不支援語音，請用 Chrome 或打字輸入');return;}
     if(listening&&rec){rec.stop();return;}
     if(!navigator.onLine){setStatus('目前沒有網路連線，語音辨識需要連網才能運作，請改用打字');return;}
-    // 先主動要一次麥克風權限：在「已安裝成桌面 App」的模式下，
-    // 直接呼叫 rec.start() 有時權限判斷會不準，先用 getUserMedia 確認一次比較可靠。
-    if(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia){
-      navigator.mediaDevices.getUserMedia({audio:true}).then(function(stream){
-        stream.getTracks().forEach(function(t){t.stop();});
-        startRecognition();
-      }).catch(function(err){
-        setStatus(ERR_MSG['not-allowed']+'（'+err.name+'）');
-      });
-    }else{
-      startRecognition();
-    }
+    startRecognition();
   });
   $('addBtn').addEventListener('click',function(){add($('inp').value);$('inp').value='';});
   $('inp').addEventListener('keydown',function(e){if(e.key==='Enter'){add($('inp').value);$('inp').value='';}});
