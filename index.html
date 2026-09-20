@@ -39,12 +39,44 @@
   .row .txt { font-size:19px; }
   .row.done .txt { text-decoration:line-through; color:#aaa; }
   .row .meta { font-size:14px; color:#777; margin-top:2px; font-variant-numeric:tabular-nums; }
-  .row.due { border-color:#d03030; background:#fdeeee; }
+  .row.due { border-color:#d03030; background:#fdeeee; animation: flash-bg 1.2s infinite; }
   .row.due .meta { color:#d03030; font-weight:600; }
+  @keyframes flash-bg {
+    0% { background: #fdeeee; }
+    50% { background: #fdd0d0; }
+    100% { background: #fdeeee; }
+  }
   .row .del { opacity:0; flex:none; width:40px; height:40px; border:none; background:transparent; color:#999; cursor:pointer; border-radius:8px; align-items:center; justify-content:center; display:flex; }
   .row:hover .del, .row:focus-within .del { opacity:1; }
   .del:hover { color:#d03030; background:#f8d7d7; }
   .hint { font-size:13px; color:#999; margin-top:14px; line-height:1.7; }
+
+  /* 停止響鈴的浮動按鈕 */
+  #stopAlarmBtn {
+    display: none;
+    position: fixed;
+    left: 50%;
+    bottom: 32px;
+    transform: translateX(-50%);
+    z-index: 999;
+    padding: 18px 48px;
+    font-size: 22px;
+    font-weight: 700;
+    color: #fff;
+    background: #d03030;
+    border: none;
+    border-radius: 50px;
+    box-shadow: 0 6px 24px rgba(208, 48, 48, 0.55);
+    cursor: pointer;
+    animation: stopBtnPulse 1s infinite;
+  }
+  #stopAlarmBtn.show { display: block; }
+  #stopAlarmBtn:active { background: #a02020; }
+  @keyframes stopBtnPulse {
+    0% { box-shadow: 0 6px 24px rgba(208, 48, 48, 0.55); }
+    50% { box-shadow: 0 6px 36px rgba(208, 48, 48, 0.95); }
+    100% { box-shadow: 0 6px 24px rgba(208, 48, 48, 0.55); }
+  }
 </style>
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-192.png">
@@ -84,6 +116,8 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   <div class="hint">小秘書說明：資料只保存在這台裝置上。「提醒」到時間會變紅色並發出聲音。安卓手機若無法網頁語音輸入，請直接使用鍵盤上的麥克風圖示。</div>
 </div>
 
+<button id="stopAlarmBtn">停止響鈴</button>
+
 <script>
 (function(){
   var LS_KEY='kimi_secretary_v1';
@@ -101,10 +135,9 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     else el.classList.remove('warning');
   }
 
-  // 偵測是否為 Android 系統 (HyperOS 等 Android 手機可能無法使用網頁語音 API)
   var isAndroid = /Android/i.test(navigator.userAgent);
 
-  // --- 音效與震動引擎 ---
+  // --- 音效引擎 ---
   var audioCtx = null;
   function initAudio() {
     if (audioCtx) return;
@@ -114,44 +147,86 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     } catch(e) { console.log('音訊不支援', e); }
   }
 
-  function playAlarmSound() {
+  // 播放一次警報（約 1.5 秒，高低音交替，使用方波更刺耳）
+  function playAlarmBeep() {
     if (!audioCtx) return;
     if (audioCtx.state === 'suspended') audioCtx.resume();
     
-    // 播放三聲短促的嗶嗶聲
-    [0, 0.4, 0.8].forEach(function(delay) {
+    var now = audioCtx.currentTime;
+    // 高-低-高-低 交替警報，最後以長音收尾
+    var notes = [
+      { f: 950, t: 0.00, d: 0.18 },
+      { f: 950, t: 0.22, d: 0.18 },
+      { f: 700, t: 0.44, d: 0.18 },
+      { f: 700, t: 0.66, d: 0.18 },
+      { f: 950, t: 0.88, d: 0.18 },
+      { f: 700, t: 1.10, d: 0.35 }
+    ];
+    
+    notes.forEach(function(n) {
       var osc = audioCtx.createOscillator();
       var gain = audioCtx.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(880, audioCtx.currentTime + delay);
+      osc.type = 'square'; // 方波，比 sine 更響、更刺耳
+      osc.frequency.setValueAtTime(n.f, now + n.t);
       osc.connect(gain);
       gain.connect(audioCtx.destination);
       
-      gain.gain.setValueAtTime(0, audioCtx.currentTime + delay);
-      gain.gain.linearRampToValueAtTime(0.3, audioCtx.currentTime + delay + 0.05);
-      gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + delay + 0.3);
+      gain.gain.setValueAtTime(0, now + n.t);
+      gain.gain.linearRampToValueAtTime(0.6, now + n.t + 0.01);
+      gain.gain.setValueAtTime(0.6, now + n.t + n.d - 0.02);
+      gain.gain.linearRampToValueAtTime(0, now + n.t + n.d);
       
-      osc.start(audioCtx.currentTime + delay);
-      osc.stop(audioCtx.currentTime + delay + 0.3);
+      osc.start(now + n.t);
+      osc.stop(now + n.t + n.d + 0.02);
     });
   }
 
-  function triggerAlarm() {
+  // --- 鬧鐘控制：重複響鈴直到使用者按停 ---
+  var alarmInterval = null;
+  var alarmStopTimer = null;
+  var alarmActive = false;
+
+  function startAlarm() {
+    if (alarmActive) return;
+    alarmActive = true;
+
+    // 震動約 4 秒
     if ('vibrate' in navigator) {
-      navigator.vibrate([500, 200, 500, 200, 1000]);
+      navigator.vibrate([500, 300, 500, 300, 500, 300, 500, 300, 500]);
     }
-    playAlarmSound();
-    if('Notification' in window && Notification.permission === 'granted'){
-      try {
-        new Notification('⏰ 小秘書提醒', {
-          body: state.reminders.find(function(x){return x.due <= Date.now() && !x.done;}).text,
-          requireInteraction: true
-        });
-      } catch(e){}
-    }
+
+    // 立刻播放第一次
+    playAlarmBeep();
+
+    // 每 1.7 秒重複播放一次
+    alarmInterval = setInterval(function(){
+      playAlarmBeep();
+      if ('vibrate' in navigator) {
+        navigator.vibrate([500, 300, 500]);
+      }
+    }, 1700);
+
+    // 最多響 60 秒後自動停止（避免無限吵下去）
+    alarmStopTimer = setTimeout(stopAlarm, 60000);
+
+    // 顯示停止按鈕
+    $('stopAlarmBtn').classList.add('show');
   }
 
-  // --- 時鐘與日期邏輯 ---
+  function stopAlarm() {
+    alarmActive = false;
+    if (alarmInterval) { clearInterval(alarmInterval); alarmInterval = null; }
+    if (alarmStopTimer) { clearTimeout(alarmStopTimer); alarmStopTimer = null; }
+    if ('vibrate' in navigator) navigator.vibrate(0);
+    $('stopAlarmBtn').classList.remove('show');
+  }
+
+  $('stopAlarmBtn').addEventListener('click', function(){
+    stopAlarm();
+    setStatus('已停止響鈴。', false);
+  });
+
+  // --- 時鐘與日期 ---
   var WEEK=['日','一','二','三','四','五','六'];
   function pad(n){return String(n).padStart(2,'0');}
   function fmtDate(d){return (d.getMonth()+1)+'/'+d.getDate()+' '+WEEK[d.getDay()]+' '+pad(d.getHours())+':'+pad(d.getMinutes());}
@@ -191,7 +266,6 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
       .replace(/\d{1,2}\s*[點:：]\s*\d{0,2}\s*(分)?/g,'').replace(/\d+\s*(分鐘|小時)後/g,'').trim();
   }
 
-  // --- 新增待辦事項 ---
   function add(text){
     text=(text||'').trim();
     if(!text)return;
@@ -214,7 +288,7 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     save();render();
   }
 
-  // --- 畫面渲染與交互 ---
+  // --- 畫面渲染 ---
   function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML;}
   var DEL='<button class="del" aria-label="刪除"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/></svg></button>';
   
@@ -263,15 +337,23 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     state.reminders.forEach(function(x){
       if(!x.done && x.due <= now && !notified[x.id]){
         notified[x.id] = true;
-        setStatus('時間到：' + x.text, true); 
-        triggerAlarm();
+        setStatus('⏰ 時間到：' + x.text, true);
+        startAlarm();
+        if('Notification' in window && Notification.permission === 'granted'){
+          try {
+            new Notification('⏰ 小秘書提醒', {
+              body: x.text,
+              requireInteraction: true
+            });
+          } catch(e){}
+        }
       }
     });
     var soon=state.reminders.some(function(x){return !x.done && x.due-now < 86400000;});
     if(soon) render();
   }
 
-  // --- 語音辨識邏輯 (針對 Android 優化) ---
+  // --- 語音辨識 ---
   var rec = null;
   var listening = false;
   var isStarting = false;
@@ -304,14 +386,12 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
       isStarting = false;
       listening = false;
       $('micBtn').classList.remove('btn-listening');
-      
       var leftover = $('inp').value.trim();
       if (leftover && !$('inp').dataset.added) {
         add(leftover);
         $('inp').value = '';
       }
       $('inp').dataset.added = '';
-      
       if($('status').textContent.indexOf('請說話') === 0){
         if (isAndroid) {
           setStatus('網頁語音未取得文字。請點擊輸入框，改用鍵盤上的麥克風輸入。', true);
@@ -325,8 +405,6 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
       isStarting = false;
       listening = false;
       $('micBtn').classList.remove('btn-listening');
-      
-      // 針對 Android 常見的系統阻擋給予明確引導
       if (isAndroid && (e.error === 'service-not-allowed' || e.error === 'aborted')) {
         setStatus('系統限制網頁語音。請點擊輸入框，改用鍵盤上的麥克風輸入。', true);
       } else {
@@ -376,26 +454,14 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     e.preventDefault(); 
     $('inp').blur(); 
     initAudio();
-
-    if(!SR){ 
-      setStatus('此瀏覽器不支援網頁語音輸入，請改用鍵盤麥克風。', true); 
-      return; 
-    }
-    if(listening || isStarting){ 
-      if(rec) { try { rec.stop(); } catch(err){} } 
-      return; 
-    }
-    if(!navigator.onLine){ 
-      setStatus('沒有網路連線，無法使用語音。', true); 
-      return; 
-    }
-    
+    if(!SR){ setStatus('此瀏覽器不支援網頁語音輸入，請改用鍵盤麥克風。', true); return; }
+    if(listening || isStarting){ if(rec) { try { rec.stop(); } catch(err){} } return; }
+    if(!navigator.onLine){ setStatus('沒有網路連線，無法使用語音。', true); return; }
     isStarting = true;
     setStatus('準備語音中...', false);
     setTimeout(function(){ startRecognition(); }, 400); 
   });
 
-  // 點擊按鈕時解鎖音訊
   $('addBtn').addEventListener('click',function(){
     initAudio(); 
     add($('inp').value);
