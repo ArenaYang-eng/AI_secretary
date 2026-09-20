@@ -147,13 +147,11 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     } catch(e) { console.log('音訊不支援', e); }
   }
 
-  // 播放一次警報（約 1.5 秒，高低音交替，使用方波更刺耳）
   function playAlarmBeep() {
     if (!audioCtx) return;
     if (audioCtx.state === 'suspended') audioCtx.resume();
     
     var now = audioCtx.currentTime;
-    // 高-低-高-低 交替警報，最後以長音收尾
     var notes = [
       { f: 950, t: 0.00, d: 0.18 },
       { f: 950, t: 0.22, d: 0.18 },
@@ -166,14 +164,14 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     notes.forEach(function(n) {
       var osc = audioCtx.createOscillator();
       var gain = audioCtx.createGain();
-      osc.type = 'square'; // 方波，比 sine 更響、更刺耳
+      osc.type = 'square';
       osc.frequency.setValueAtTime(n.f, now + n.t);
       osc.connect(gain);
       gain.connect(audioCtx.destination);
       
       gain.gain.setValueAtTime(0, now + n.t);
-      gain.gain.linearRampToValueAtTime(0.6, now + n.t + 0.01);
-      gain.gain.setValueAtTime(0.6, now + n.t + n.d - 0.02);
+      gain.gain.linearRampToValueAtTime(0.5, now + n.t + 0.01);       // 音量 0.5
+      gain.gain.setValueAtTime(0.5, now + n.t + n.d - 0.02);
       gain.gain.linearRampToValueAtTime(0, now + n.t + n.d);
       
       osc.start(now + n.t);
@@ -181,7 +179,7 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     });
   }
 
-  // --- 鬧鐘控制：重複響鈴直到使用者按停 ---
+  // --- 鬧鐘控制 ---
   var alarmInterval = null;
   var alarmStopTimer = null;
   var alarmActive = false;
@@ -190,26 +188,17 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     if (alarmActive) return;
     alarmActive = true;
 
-    // 震動約 4 秒
     if ('vibrate' in navigator) {
       navigator.vibrate([500, 300, 500, 300, 500, 300, 500, 300, 500]);
     }
-
-    // 立刻播放第一次
     playAlarmBeep();
-
-    // 每 1.7 秒重複播放一次
     alarmInterval = setInterval(function(){
       playAlarmBeep();
       if ('vibrate' in navigator) {
         navigator.vibrate([500, 300, 500]);
       }
     }, 1700);
-
-    // 最多響 60 秒後自動停止（避免無限吵下去）
     alarmStopTimer = setTimeout(stopAlarm, 60000);
-
-    // 顯示停止按鈕
     $('stopAlarmBtn').classList.add('show');
   }
 
@@ -226,7 +215,7 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     setStatus('已停止響鈴。', false);
   });
 
-  // --- 時鐘與日期 ---
+  // --- 時鐘 ---
   var WEEK=['日','一','二','三','四','五','六'];
   function pad(n){return String(n).padStart(2,'0');}
   function fmtDate(d){return (d.getMonth()+1)+'/'+d.getDate()+' '+WEEK[d.getDay()]+' '+pad(d.getHours())+':'+pad(d.getMinutes());}
@@ -238,6 +227,24 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     checkDue();
   }
   setInterval(tick,1000);
+
+  // --- 中文數字正規化 ---
+  // 把「兩點」「二點」「十一點」「十二點」等轉成阿拉伯數字，方便後續解析
+  function normalizeNumbers(text) {
+    // 先處理「十X」
+    text = text.replace(/十([一二兩两三四五六七八九])/g, function(m, c){
+      var d = {'一':1,'二':2,'兩':2,'两':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9}[c] || 0;
+      return String(10 + d);
+    });
+    // 處理單獨的「十」
+    text = text.replace(/十/g, '10');
+    // 處理「X點 / X点」的單字數字
+    text = text.replace(/([一二兩两三四五六七八九])[點点]/g, function(m, c){
+      var d = {'一':1,'二':2,'兩':2,'两':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9}[c] || 0;
+      return d + m.charAt(1); // 保留原本的「點」或「点」
+    });
+    return text;
+  }
 
   // --- 解析自然語言時間 ---
   function parseTime(text){
@@ -262,27 +269,40 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   }
   
   function stripTimeWords(text){
-    return text.replace(/(請|幫我|記得)?提醒我/g,'').replace(/(明天|今天|今晚|早上|上午|中午|下午|晚上)/g,'')
-      .replace(/\d{1,2}\s*[點:：]\s*\d{0,2}\s*(分)?/g,'').replace(/\d+\s*(分鐘|小時)後/g,'').trim();
+    return text.replace(/(請|幫我|記得)?提醒我/g,'')
+      .replace(/(明天|今天|今晚|早上|上午|中午|下午|晚上)/g,'')
+      .replace(/\d{1,2}\s*[點:：]\s*\d{0,2}\s*(分)?/g,'')
+      .replace(/\d+\s*(分鐘|小時)後/g,'').trim();
   }
 
+  // --- 新增待辦事項 ---
   function add(text){
-    text=(text||'').trim();
-    if(!text)return;
-    var isRem=/提醒我|記得提醒|鬧鐘/.test(text);
+    text = (text||'').trim();
+    if(!text) return;
+    
+    // 先把中文數字正規化，再進行意圖判斷與時間解析
+    var normalized = normalizeNumbers(text);
+    var isRem = /提醒我|提醒|記得提醒|鬧鐘|闹钟|叫我/.test(normalized);
+    
     if(isRem){
-      var due=parseTime(text);
-      var title=stripTimeWords(text)||'提醒';
+      var due = parseTime(normalized);
+      var title = stripTimeWords(normalized) || '提醒';
       if(!due){
-        setStatus('聽不太懂時間，改存到備忘錄囉', false);
-        state.notes.unshift({id:Date.now(),text:text,done:false});
+        // 明確是提醒意圖但解析不到時間 → 依然放進提醒，預設 24 小時後整點
+        var defaultDue = new Date(Date.now() + 24*60*60*1000);
+        defaultDue.setMinutes(0,0,0);
+        state.reminders.unshift({id:Date.now(), text:title, due:defaultDue.getTime(), done:false});
+        setStatus('沒聽到明確時間，已預設為 24 小時後提醒：'+title, false);
+        if('Notification' in window && Notification.permission==='default') Notification.requestPermission();
       }else{
-        state.reminders.unshift({id:Date.now(),text:title,due:due.getTime(),done:false});
+        state.reminders.unshift({id:Date.now(), text:title, due:due.getTime(), done:false});
         setStatus('好的，已設定提醒：'+title+'（'+fmtDate(due)+'）', false);
-        if('Notification' in window && Notification.permission==='default')Notification.requestPermission();
+        if('Notification' in window && Notification.permission==='default') Notification.requestPermission();
       }
     }else{
-      state.notes.unshift({id:Date.now(),text:text.replace(/^(請|幫我)?(記下|記得|記住)/,''),done:false});
+      // 一般備忘錄：去掉開頭的「記下/記得/記住」等動詞
+      var noteTitle = normalized.replace(/^(請|幫我)?(記下|記得|記住|幫我記)/,'').trim();
+      state.notes.unshift({id:Date.now(), text:noteTitle, done:false});
       setStatus('好的，已記在備忘錄', false);
     }
     save();render();
