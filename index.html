@@ -169,8 +169,8 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
       gain.connect(audioCtx.destination);
       
       gain.gain.setValueAtTime(0, now + n.t);
-      gain.gain.linearRampToValueAtTime(0.4, now + n.t + 0.01);       // 音量 0.4
-      gain.gain.setValueAtTime(0.4, now + n.t + n.d - 0.02);
+      gain.gain.linearRampToValueAtTime(0.2, now + n.t + 0.01);       // 音量調整處 0.4
+      gain.gain.setValueAtTime(0.2, now + n.t + n.d - 0.02);
       gain.gain.linearRampToValueAtTime(0, now + n.t + n.d);
       
       osc.start(now + n.t);
