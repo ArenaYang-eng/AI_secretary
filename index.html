@@ -76,6 +76,66 @@
     50% { box-shadow: 0 6px 36px rgba(208, 48, 48, 0.95); }
     100% { box-shadow: 0 6px 24px rgba(208, 48, 48, 0.55); }
   }
+
+  /* --- 資料管理 / 設定 --- */
+  .settings-btn {
+    width:100%;
+    margin-top:18px;
+    padding:12px 16px;
+    font-size:16px;
+    font-weight:600;
+  }
+  .settings-panel {
+    display:none;
+    margin-top:10px;
+    padding:14px;
+    border:1px solid #ddd;
+    border-radius:12px;
+    background:#fff;
+  }
+  .settings-panel.show { display:block; }
+  .settings-title { font-size:17px; font-weight:600; margin-bottom:12px; }
+  .settings-row {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:12px;
+    padding:10px 0;
+    border-top:1px solid #eee;
+  }
+  .settings-row:first-of-type { border-top:0; }
+  .settings-row label { font-size:15px; }
+  .settings-row input[type="range"] { flex:1; min-width:120px; }
+  .volume-value { width:46px; text-align:right; font-variant-numeric:tabular-nums; }
+  .data-actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:10px; }
+  .data-actions .btn { min-height:44px; padding:8px 10px; font-size:15px; }
+  .backup-hint { margin-top:8px; font-size:13px; line-height:1.6; color:#777; }
+  .hidden-file { display:none; }
+
+  .modal-backdrop {
+    display:none;
+    position:fixed;
+    inset:0;
+    z-index:1000;
+    background:rgba(0,0,0,.35);
+    align-items:center;
+    justify-content:center;
+    padding:20px;
+  }
+  .modal-backdrop.show { display:flex; }
+  .modal {
+    width:min(420px,100%);
+    background:#fff;
+    border-radius:16px;
+    padding:20px;
+    box-shadow:0 12px 40px rgba(0,0,0,.25);
+  }
+  .modal h3 { margin:0 0 10px; font-size:20px; }
+  .modal p { margin:0 0 16px; color:#555; line-height:1.6; }
+  .modal-actions { display:grid; gap:8px; }
+  .modal-actions .btn { min-height:46px; padding:10px 14px; font-weight:600; }
+  .btn-danger { color:#d03030; border-color:#e5aaaa; }
+
 </style>
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-192.png">
@@ -112,7 +172,41 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     <div class="sec-title">備忘錄 <span class="cnt" id="noteCnt"></span></div>
     <div id="noteList"></div>
   </div>
-  <div class="hint">小秘書說明：資料只保存在這台裝置上。「提醒」到時間會變紅色並發出聲音。安卓手機若無法網頁語音輸入，請直接使用鍵盤上的麥克風圖示。</div>
+
+  <button class="btn settings-btn" id="settingsBtn">⚙ 資料與提醒設定</button>
+  <div class="settings-panel" id="settingsPanel">
+    <div class="settings-title">資料管理</div>
+    <div class="data-actions">
+      <button class="btn" id="shareBackupBtn">📤 備份 / 分享</button>
+      <button class="btn" id="importBtn">📥 匯入備份</button>
+    </div>
+    <input class="hidden-file" type="file" id="importFile" accept=".json,application/json">
+
+    <div class="settings-title" style="margin-top:18px;">提醒音量</div>
+    <div class="settings-row">
+      <label for="volumeRange">音量</label>
+      <input type="range" id="volumeRange" min="0.01" max="0.10" step="0.01" value="0.04">
+      <span class="volume-value" id="volumeValue">40%</span>
+    </div>
+    <div class="backup-hint">
+      備份檔可以透過 LINE、AirDrop、訊息、Email 或雲端硬碟傳給另一支手機，再使用「匯入備份」。
+      匯入時可選擇「合併」或「完全取代」。
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="importModal">
+    <div class="modal">
+      <h3>匯入備份</h3>
+      <p id="importSummary">請選擇匯入方式。</p>
+      <div class="modal-actions">
+        <button class="btn" id="mergeImportBtn">合併到目前資料</button>
+        <button class="btn btn-danger" id="replaceImportBtn">完全取代目前資料</button>
+        <button class="btn" id="cancelImportBtn">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="hint">小秘書說明：資料只保存在這台裝置上。可使用「資料與提醒設定」備份、分享或匯入資料。「提醒」到時間會變紅色並發出柔和提示音。安卓手機若無法網頁語音輸入，請直接使用鍵盤上的麥克風圖示。</div>
 </div>
 
 <button id="stopAlarmBtn">停止響鈴</button>
@@ -138,6 +232,7 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
 
   // --- 音效引擎 ---
   var audioCtx = null;
+  var alarmVolume = 0.04;
   function initAudio() {
     if (audioCtx) return;
     try {
@@ -163,19 +258,122 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     notes.forEach(function(n) {
       var osc = audioCtx.createOscillator();
       var gain = audioCtx.createGain();
-      osc.type = 'square';
+      osc.type = 'sine';
       osc.frequency.setValueAtTime(n.f, now + n.t);
       osc.connect(gain);
       gain.connect(audioCtx.destination);
       
       gain.gain.setValueAtTime(0, now + n.t);
-      gain.gain.linearRampToValueAtTime(0.2, now + n.t + 0.01);       // 音量調整處 0.4
-      gain.gain.setValueAtTime(0.2, now + n.t + n.d - 0.02);
+      gain.gain.linearRampToValueAtTime(alarmVolume, now + n.t + 0.01);
+      gain.gain.setValueAtTime(alarmVolume, now + n.t + n.d - 0.02);
       gain.gain.linearRampToValueAtTime(0, now + n.t + n.d);
       
       osc.start(now + n.t);
       osc.stop(now + n.t + n.d + 0.02);
     });
+  }
+
+
+  // --- 設定 / 備份資料 ---
+  var SETTINGS_KEY='kimi_secretary_settings_v1';
+  try {
+    var savedSettings = JSON.parse(localStorage.getItem(SETTINGS_KEY));
+    if (savedSettings && typeof savedSettings.alarmVolume === 'number') {
+      alarmVolume = Math.max(0.01, Math.min(0.10, savedSettings.alarmVolume));
+    }
+  } catch(e) {}
+
+  function saveSettings(){
+    try {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+        alarmVolume: alarmVolume
+      }));
+    } catch(e) {}
+  }
+
+  function makeBackupData(){
+    return {
+      format: 'kimi-secretary-backup',
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      reminders: state.reminders,
+      notes: state.notes
+    };
+  }
+
+  function downloadBackup(){
+    var json = JSON.stringify(makeBackupData(), null, 2);
+    var stamp = new Date();
+    var filename =
+      '小秘書備份_' +
+      stamp.getFullYear() +
+      String(stamp.getMonth()+1).padStart(2,'0') +
+      String(stamp.getDate()).padStart(2,'0') + '.json';
+
+    var blob = new Blob([json], {type:'application/json;charset=utf-8'});
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+  }
+
+  var pendingImport = null;
+
+  function validateImportData(data){
+    if (!data || !Array.isArray(data.reminders) || !Array.isArray(data.notes)) {
+      throw new Error('備份格式不正確');
+    }
+
+    data.reminders.forEach(function(x){
+      if (!x || typeof x.id !== 'number' || typeof x.text !== 'string' ||
+          typeof x.due !== 'number' || typeof x.done !== 'boolean') {
+        throw new Error('提醒資料格式不正確');
+      }
+    });
+
+    data.notes.forEach(function(x){
+      if (!x || typeof x.id !== 'number' || typeof x.text !== 'string' ||
+          typeof x.done !== 'boolean') {
+        throw new Error('備忘錄資料格式不正確');
+      }
+    });
+
+    return {
+      reminders: data.reminders,
+      notes: data.notes
+    };
+  }
+
+  function mergeData(imported){
+    var reminderIds = {};
+    var noteIds = {};
+
+    state.reminders.forEach(function(x){ reminderIds[String(x.id)] = true; });
+    state.notes.forEach(function(x){ noteIds[String(x.id)] = true; });
+
+    imported.reminders.forEach(function(x){
+      if (!reminderIds[String(x.id)]) state.reminders.push(x);
+    });
+
+    imported.notes.forEach(function(x){
+      if (!noteIds[String(x.id)]) state.notes.push(x);
+    });
+
+    save();
+    render();
+  }
+
+  function replaceData(imported){
+    state = {
+      reminders: imported.reminders,
+      notes: imported.notes
+    };
+    save();
+    render();
   }
 
   // --- 鬧鐘控制 ---
@@ -196,7 +394,7 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
       if ('vibrate' in navigator) {
         navigator.vibrate([500, 300, 500]);
       }
-    }, 1700);
+    }, 3000);
     alarmStopTimer = setTimeout(stopAlarm, 15000); // 15 秒後自動停止
     $('stopAlarmBtn').classList.add('show');
   }
@@ -213,6 +411,123 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     stopAlarm();
     setStatus('已停止響鈴。', false);
   });
+
+
+  // --- 設定介面 ---
+  $('settingsBtn').addEventListener('click', function(){
+    $('settingsPanel').classList.toggle('show');
+  });
+
+  function updateVolumeUI(){
+    var percent = Math.round(alarmVolume * 1000);
+    $('volumeRange').value = alarmVolume.toFixed(2);
+    $('volumeValue').textContent = percent + '%';
+  }
+
+  $('volumeRange').addEventListener('input', function(){
+    alarmVolume = parseFloat(this.value);
+    updateVolumeUI();
+    saveSettings();
+  });
+
+  $('shareBackupBtn').addEventListener('click', async function(){
+    var json = JSON.stringify(makeBackupData(), null, 2);
+    var stamp = new Date();
+    var filename =
+      '小秘書備份_' +
+      stamp.getFullYear() +
+      String(stamp.getMonth()+1).padStart(2,'0') +
+      String(stamp.getDate()).padStart(2,'0') + '.json';
+
+    try {
+      var file = new File([json], filename, {
+        type:'application/json'
+      });
+
+      if (navigator.share && navigator.canShare && navigator.canShare({files:[file]})) {
+        await navigator.share({
+          title:'小秘書備份',
+          text:'小秘書備忘錄備份',
+          files:[file]
+        });
+        setStatus('已開啟手機分享功能。', false);
+      } else {
+        downloadBackup();
+        setStatus('已產生備份檔，請用手機的分享功能傳給另一支手機。', false);
+      }
+    } catch(e) {
+      if (e && e.name === 'AbortError') return;
+      downloadBackup();
+      setStatus('已產生備份檔。', false);
+    }
+  });
+
+  $('importBtn').addEventListener('click', function(){
+    $('importFile').click();
+  });
+
+  $('importFile').addEventListener('change', function(e){
+    var file = e.target.files && e.target.files[0];
+    if (!file) return;
+
+    var reader = new FileReader();
+
+    reader.onload = function(){
+      try {
+        var raw = JSON.parse(reader.result);
+        pendingImport = validateImportData(raw);
+
+        $('importSummary').textContent =
+          '這份備份包含 ' +
+          pendingImport.reminders.length + ' 筆提醒、' +
+          pendingImport.notes.length + ' 筆備忘錄。請選擇要合併或完全取代。';
+
+        $('importModal').classList.add('show');
+      } catch(err) {
+        pendingImport = null;
+        setStatus('匯入失敗：不是有效的小秘書備份檔。', true);
+      }
+
+      e.target.value = '';
+    };
+
+    reader.onerror = function(){
+      setStatus('無法讀取備份檔。', true);
+      e.target.value = '';
+    };
+
+    reader.readAsText(file);
+  });
+
+  $('mergeImportBtn').addEventListener('click', function(){
+    if (!pendingImport) return;
+    mergeData(pendingImport);
+    pendingImport = null;
+    $('importModal').classList.remove('show');
+    setStatus('匯入完成：已合併新資料，原本資料保留。', false);
+  });
+
+  $('replaceImportBtn').addEventListener('click', function(){
+    if (!pendingImport) return;
+    replaceData(pendingImport);
+    pendingImport = null;
+    $('importModal').classList.remove('show');
+    setStatus('匯入完成：目前資料已由備份取代。', false);
+  });
+
+  $('cancelImportBtn').addEventListener('click', function(){
+    pendingImport = null;
+    $('importModal').classList.remove('show');
+  });
+
+  $('importModal').addEventListener('click', function(e){
+    if (e.target === $('importModal')) {
+      pendingImport = null;
+      $('importModal').classList.remove('show');
+    }
+  });
+
+  updateVolumeUI();
 
   // --- 時鐘 ---
   var WEEK=['日','一','二','三','四','五','六'];
