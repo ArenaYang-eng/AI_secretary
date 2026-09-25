@@ -234,12 +234,33 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   var audioCtx = null;
   var alarmVolume = 0.04;
   function initAudio() {
-    if (audioCtx) return;
+    if (audioCtx) {
+      try { if (audioCtx.state === 'suspended') audioCtx.resume(); } catch(e) {}
+      return;
+    }
     try {
+      // iOS 17+ / WebKit：優先使用 playback audio session。
+      if ('audioSession' in navigator && navigator.audioSession) {
+        try { navigator.audioSession.type = 'playback'; } catch(e) {}
+      }
       var AudioContext = window.AudioContext || window.webkitAudioContext;
       audioCtx = new AudioContext();
+      try { if (audioCtx.state === 'suspended') audioCtx.resume(); } catch(e) {}
     } catch(e) { console.log('音訊不支援', e); }
   }
+
+  function resumeAudio() {
+    if (!audioCtx) return;
+    try {
+      if (audioCtx.state === 'suspended' || audioCtx.state === 'interrupted') audioCtx.resume();
+    } catch(e) {}
+  }
+
+  document.addEventListener('visibilitychange', function(){
+    if (document.visibilityState === 'visible') resumeAudio();
+  });
+  window.addEventListener('pageshow', resumeAudio);
+  window.addEventListener('focus', resumeAudio);
 
   function playAlarmBeep() {
     if (!audioCtx) return;
@@ -384,6 +405,7 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   function startAlarm() {
     if (alarmActive) return;
     alarmActive = true;
+    resumeAudio();
 
     if ('vibrate' in navigator) {
       navigator.vibrate([500, 300, 500, 300, 500, 300, 500, 300, 500]);
