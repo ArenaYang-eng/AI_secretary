@@ -2,7 +2,7 @@
    策略：網路優先（network-first）。
    有網路時一律抓最新版本並更新備份；沒網路時才用備份。 */
 
-const CACHE = 'secretary-v2'; // 版本號往上加，才會清掉舊快取
+const CACHE = 'secretary-v3'; // 版本號往上加，才會清掉舊快取
 const CORE_ASSETS = [
   './',
   './index.html',
