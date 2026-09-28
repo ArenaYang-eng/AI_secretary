@@ -1,0 +1,8 @@
+{
+  "name": "secretary-push",
+  "private": true,
+  "type": "module",
+  "scripts": { "deploy": "wrangler deploy", "dev": "wrangler dev" },
+  "dependencies": { "@block65/webcrypto-web-push": "^2.0.0" },
+  "devDependencies": { "wrangler": "^4" }
+}
