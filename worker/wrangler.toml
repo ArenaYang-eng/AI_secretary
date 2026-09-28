@@ -1,0 +1,19 @@
+name = "secretary-push"
+main = "index.js"
+compatibility_date = "2025-01-01"
+
+# 每分鐘喚醒一次，檢查有沒有到期的提醒（免費方案可用）
+[triggers]
+crons = ["* * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "secretary"
+database_id = "6669accc-b5ce-4e76-ba8e-d64d6297ff47"
+
+[vars]
+# 只允許你的 GitHub Pages 網址（只寫到網域，不要加路徑）
+ALLOWED_ORIGIN = "https://Arena.yang@gmail.com.github.io"
+VAPID_SUBJECT = "mailto:arena.yang@gmail.com"
+VAPID_PUBLIC_KEY = "BBJoREoXdahN6Yz8m-tT5k8_tl5swOr95xfvRkrOOVAZjNT6P1PKpYuTqp4saYYXxIqni6UFnfl7jopGCFtNdiQ"
+# VAPID_PRIVATE_KEY 不要寫在這裡，用 wrangler secret put 設定
