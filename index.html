@@ -208,8 +208,13 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     <div class="settings-title" style="margin-top:18px;">提醒音量</div>
     <div class="settings-row">
       <label for="volumeRange">音量</label>
-      <input type="range" id="volumeRange" min="0.01" max="0.10" step="0.01" value="0.04">
-      <span class="volume-value" id="volumeValue">40%</span>
+      <input type="range" id="volumeRange" min="0.05" max="1" step="0.05" value="0.5">
+      <span class="volume-value" id="volumeValue">50%</span>
+    </div>
+    <button class="btn" id="testSoundBtn" style="width:100%;min-height:40px;margin-top:6px;">▶ 試聽響鈴</button>
+    <div class="backup-hint">
+      iPhone 聽不到聲音時請檢查：側邊靜音開關、手機音量、App 要在前景（開著畫面）。
+      App 在背景或鎖定時，響鈴是由系統通知音負責，請到「設定 → 通知 → 小秘書」確認「聲音」已開啟。
     </div>
     <div class="backup-hint">
       備份檔可以透過 LINE、AirDrop、訊息、Email 或雲端硬碟傳給另一支手機，再使用「匯入備份」。
@@ -508,7 +513,7 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
 
   // --- 音效引擎 ---
   var audioCtx = null;
-  var alarmVolume = 0.04;
+  var alarmVolume = 0.5;
   function initAudio() {
     if (audioCtx) {
       try { if (audioCtx.state === 'suspended') audioCtx.resume(); } catch(e) {}
@@ -538,36 +543,101 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   window.addEventListener('pageshow', resumeAudio);
   window.addEventListener('focus', resumeAudio);
 
-  function playAlarmBeep() {
+  var ALARM_NOTES = [
+    { f: 950, t: 0.00, d: 0.18 }, { f: 950, t: 0.22, d: 0.18 },
+    { f: 700, t: 0.44, d: 0.18 }, { f: 700, t: 0.66, d: 0.18 },
+    { f: 950, t: 0.88, d: 0.18 }, { f: 700, t: 1.10, d: 0.35 }
+  ];
+
+  // Web Audio 版（桌機 / 一般情況）
+  function playWebBeep() {
     if (!audioCtx) return;
     if (audioCtx.state === 'suspended') audioCtx.resume();
-    
     var now = audioCtx.currentTime;
-    var notes = [
-      { f: 950, t: 0.00, d: 0.18 },
-      { f: 950, t: 0.22, d: 0.18 },
-      { f: 700, t: 0.44, d: 0.18 },
-      { f: 700, t: 0.66, d: 0.18 },
-      { f: 950, t: 0.88, d: 0.18 },
-      { f: 700, t: 1.10, d: 0.35 }
-    ];
-    
-    notes.forEach(function(n) {
+    ALARM_NOTES.forEach(function(n) {
       var osc = audioCtx.createOscillator();
       var gain = audioCtx.createGain();
-      osc.type = 'sine';
+      osc.type = 'triangle';
       osc.frequency.setValueAtTime(n.f, now + n.t);
       osc.connect(gain);
       gain.connect(audioCtx.destination);
-      
       gain.gain.setValueAtTime(0, now + n.t);
       gain.gain.linearRampToValueAtTime(alarmVolume, now + n.t + 0.01);
       gain.gain.setValueAtTime(alarmVolume, now + n.t + n.d - 0.02);
       gain.gain.linearRampToValueAtTime(0, now + n.t + n.d);
-      
       osc.start(now + n.t);
       osc.stop(now + n.t + n.d + 0.02);
     });
+  }
+
+  // HTML <audio> 版：iPhone 靜音開關不會擋；音量要直接做進音檔（iOS 不支援 audio.volume）
+  var alarmAudio = null, htmlUnlocked = false, wavUrl = null;
+  function buildAlarmWav(vol) {
+    var sr = 22050, len = Math.floor(sr * 1.6);
+    var buf = new ArrayBuffer(44 + len * 2), v = new DataView(buf);
+    function w(o, str) { for (var i = 0; i < str.length; i++) v.setUint8(o + i, str.charCodeAt(i)); }
+    w(0, 'RIFF'); v.setUint32(4, 36 + len * 2, true); w(8, 'WAVEfmt ');
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    w(36, 'data'); v.setUint32(40, len * 2, true);
+    for (var i = 0; i < len; i++) {
+      var t = i / sr, a = 0;
+      for (var k = 0; k < ALARM_NOTES.length; k++) {
+        var n = ALARM_NOTES[k];
+        if (t >= n.t && t < n.t + n.d) {
+          var d = t - n.t, env = Math.max(0, Math.min(1, d / 0.01, (n.d - d) / 0.02));
+          a = env * (2 / Math.PI) * Math.asin(Math.sin(2 * Math.PI * n.f * t));
+          break;
+        }
+      }
+      v.setInt16(44 + i * 2, Math.max(-1, Math.min(1, a * vol)) * 32767, true);
+    }
+    return new Blob([buf], { type: 'audio/wav' });
+  }
+  function setAlarmSrc(vol) {
+    if (!alarmAudio) return;
+    if (wavUrl) { try { URL.revokeObjectURL(wavUrl); } catch(e) {} }
+    wavUrl = URL.createObjectURL(buildAlarmWav(vol));
+    alarmAudio.src = wavUrl;
+    try { alarmAudio.load(); } catch(e) {}
+  }
+  // iOS 規定：第一次發聲必須由「點一下」觸發。App 開著期間點任何地方都會解鎖。
+  function unlockAudio(cb) {
+    initAudio();
+    if (htmlUnlocked) { if (cb) cb(); return; }
+    if (!alarmAudio) {
+      try {
+        alarmAudio = new Audio();
+        alarmAudio.preload = 'auto';
+        alarmAudio.setAttribute('playsinline', '');
+        setAlarmSrc(0); // 先用無聲音檔解鎖，不會有「啵」一聲
+        var p = alarmAudio.play();
+        if (p && p.then) {
+          p.then(function(){
+            alarmAudio.pause();
+            htmlUnlocked = true;
+            setAlarmSrc(alarmVolume);
+            if (alarmActive) playAlarmBeep();
+            if (cb) cb();
+          }).catch(function(){ if (cb) cb(); });
+        } else if (cb) cb();
+      } catch(e) { if (cb) cb(); }
+    } else if (cb) cb();
+  }
+  ['touchend', 'pointerdown', 'click', 'keydown'].forEach(function(ev){
+    document.addEventListener(ev, function(){ unlockAudio(); }, { passive: true });
+  });
+
+  function playAlarmBeep() {
+    if (htmlUnlocked && alarmAudio) {
+      try {
+        alarmAudio.currentTime = 0;
+        var p = alarmAudio.play();
+        if (p && p.catch) p.catch(function(){ playWebBeep(); });
+        return;
+      } catch(e) {}
+    }
+    playWebBeep();
   }
 
 
@@ -575,15 +645,15 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   var SETTINGS_KEY='kimi_secretary_settings_v1';
   try {
     var savedSettings = JSON.parse(localStorage.getItem(SETTINGS_KEY));
-    if (savedSettings && typeof savedSettings.alarmVolume === 'number') {
-      alarmVolume = Math.max(0.01, Math.min(0.10, savedSettings.alarmVolume));
+    if (savedSettings && savedSettings.v === 2 && typeof savedSettings.alarmVolume === 'number') {
+      alarmVolume = Math.max(0.05, Math.min(1, savedSettings.alarmVolume));
     }
   } catch(e) {}
 
   function saveSettings(){
     try {
       localStorage.setItem(SETTINGS_KEY, JSON.stringify({
-        alarmVolume: alarmVolume
+        v: 2, alarmVolume: alarmVolume
       }));
     } catch(e) {}
   }
@@ -686,6 +756,9 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     if ('vibrate' in navigator) {
       navigator.vibrate([500, 300, 500, 300, 500, 300, 500, 300, 500]);
     }
+    if (!htmlUnlocked && !(audioCtx && audioCtx.state === 'running')) {
+      setStatus('⏰ 提醒時間到！若沒聽到聲音，請點一下螢幕啟用響鈴（iPhone 需要先點一下）。', true);
+    }
     playAlarmBeep();
     alarmInterval = setInterval(function(){
       playAlarmBeep();
@@ -746,7 +819,7 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   });
 
   function updateVolumeUI(){
-    var percent = Math.round(alarmVolume * 1000);
+    var percent = Math.round(alarmVolume * 100);
     $('volumeRange').value = alarmVolume.toFixed(2);
     $('volumeValue').textContent = percent + '%';
   }
@@ -755,6 +828,13 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     alarmVolume = parseFloat(this.value);
     updateVolumeUI();
     saveSettings();
+  });
+  $('volumeRange').addEventListener('change', function(){
+    if (htmlUnlocked) setAlarmSrc(alarmVolume);   // 音量做進音檔，放開滑桿後重新產生
+    unlockAudio(function(){ playAlarmBeep(); });
+  });
+  $('testSoundBtn').addEventListener('click', function(){
+    unlockAudio(function(){ setAlarmSrc(alarmVolume); playAlarmBeep(); });
   });
 
   $('shareBackupBtn').addEventListener('click', async function(){
