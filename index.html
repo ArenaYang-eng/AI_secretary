@@ -189,6 +189,22 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
       到期後若沒點開，會每分鐘重複提醒，最多 4 次。
     </div>
 
+    <div class="settings-title" style="margin-top:18px;">與電腦同步備忘錄</div>
+    <button class="btn" id="syncBtn" data-on="0" style="width:100%;min-height:44px;">🔄 開啟與電腦同步</button>
+    <div id="syncBox" style="display:none;margin-top:10px;">
+      <div class="backup-hint" id="syncState" style="margin-top:0;"></div>
+      <div class="settings-row">
+        <label for="syncToken">同步金鑰</label>
+        <input id="syncToken" readonly style="flex:1;min-width:0;font-size:12px;padding:8px;border:1px solid #ccc;border-radius:8px;">
+        <button class="btn" id="syncCopyBtn" style="padding:8px 12px;">複製</button>
+      </div>
+      <button class="btn" id="syncNowBtn" style="width:100%;min-height:40px;margin-top:6px;">立即同步</button>
+    </div>
+    <div class="backup-hint">
+      開啟後，提醒與備忘錄會存到你自己的 Cloudflare 帳號，並和電腦小工具雙向同步。
+      金鑰等同密碼，只貼到你自己的電腦，不要公開。
+    </div>
+
     <div class="settings-title" style="margin-top:18px;">提醒音量</div>
     <div class="settings-row">
       <label for="volumeRange">音量</label>
@@ -224,7 +240,7 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   var state={reminders:[],notes:[]};
   try{var s=JSON.parse(localStorage.getItem(LS_KEY));if(s)state=s;}catch(e){}
   
-  function save(){try{localStorage.setItem(LS_KEY,JSON.stringify(state));}catch(e){} pushSync();}
+  function save(){stampAll();try{localStorage.setItem(LS_KEY,JSON.stringify(state));}catch(e){} pushSync(); syncSoon();}
   
   var $=function(id){return document.getElementById(id);};
   
@@ -268,6 +284,144 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     for (var i=0;i<r.length;i++) o[i]=r.charCodeAt(i);
     return o;
   }
+
+
+  // --- 與電腦同步備忘錄（經由同一個 Cloudflare Worker）---
+  // 每筆資料用 upd（最後修改時間）比較，較新者勝；刪除以「刪除標記」同步給其他裝置。
+  var SYNC_FLAG = 'secretary_sync_on';
+  var SYNC_META = 'secretary_sync_meta';
+  var syncBusy = false, syncTimer = null, syncLastMsg = '';
+
+  function syncOn(){ return localStorage.getItem(SYNC_FLAG) === '1'; }
+  function loadMeta(){
+    try{
+      var m = JSON.parse(localStorage.getItem(SYNC_META));
+      if (m && m.shadow && m.tombs) return m;
+    }catch(e){}
+    return {since:0, sent:0, shadow:{}, tombs:[]};
+  }
+  function saveMeta(m){ try{ localStorage.setItem(SYNC_META, JSON.stringify(m)); }catch(e){} }
+  function sigOf(kind, x){
+    return kind + '|' + JSON.stringify([x.text, kind==='reminder'?x.due:0, !!x.done, !!x.ackd]);
+  }
+  // 比對上次同步時的樣子：有變動的補上 upd、不見的記成刪除標記
+  function stampAll(){
+    if (!syncOn()) return;
+    var meta = loadMeta(), now = Date.now(), seen = {};
+    [['reminder', state.reminders], ['note', state.notes]].forEach(function(p){
+      p[1].forEach(function(x){
+        var k = String(x.id), sg = sigOf(p[0], x);
+        seen[k] = 1;
+        if (meta.shadow[k] !== sg){
+          if (meta.shadow[k] === undefined && x.upd) { /* 從別處帶來、已有時間戳 */ }
+          else x.upd = (meta.shadow[k] === undefined && typeof x.id === 'number' && x.id < now) ? Math.max(x.upd||0, x.id) : now;
+          meta.shadow[k] = sg;
+          meta.tombs = meta.tombs.filter(function(t){ return t.id !== k; });
+        }
+        if (!x.upd) x.upd = (typeof x.id === 'number' ? x.id : now);
+      });
+    });
+    Object.keys(meta.shadow).forEach(function(k){
+      if (!seen[k]){
+        meta.tombs.push({id:k, upd:now});
+        delete meta.shadow[k];
+      }
+    });
+    saveMeta(meta);
+  }
+  function findLocal(k){
+    var i, l = [state.reminders, state.notes];
+    for (var a=0; a<2; a++) for (i=0; i<l[a].length; i++) if (String(l[a][i].id) === k) return {list:l[a], idx:i, item:l[a][i]};
+    return null;
+  }
+  // 套用其他裝置傳來的變更（回傳是否有改動）
+  function applyRemote(list, meta){
+    var changed = false;
+    list.forEach(function(r){
+      var k = String(r.id), rupd = +r.upd || 0, loc = findLocal(k);
+      var tomb = meta.tombs.filter(function(t){ return t.id === k; })[0];
+      if (r.deleted){
+        if (loc && (loc.item.upd||0) < rupd){ loc.list.splice(loc.idx, 1); delete meta.shadow[k]; changed = true; }
+        return;
+      }
+      if (loc && (loc.item.upd||0) >= rupd) return;
+      if (tomb && tomb.upd >= rupd) return;
+      var n;
+      if (r.kind === 'reminder') n = {id:+r.id, text:r.text, due:+r.due, done:!!r.done, ackd:!!r.ackd, upd:rupd};
+      else n = {id:+r.id, text:r.text, done:!!r.done, upd:rupd};
+      if (!isFinite(n.id)) return;
+      var target = (r.kind === 'reminder') ? state.reminders : state.notes;
+      if (loc){
+        if (loc.list === target) target[loc.idx] = n;
+        else { loc.list.splice(loc.idx, 1); target.unshift(n); }
+      } else target.unshift(n);
+      meta.tombs = meta.tombs.filter(function(t){ return t.id !== k; });
+      meta.shadow[k] = sigOf(r.kind === 'reminder' ? 'reminder' : 'note', n);
+      changed = true;
+    });
+    return changed;
+  }
+  async function itemsSync(){
+    if (!syncOn() || syncBusy || !navigator.onLine) return;
+    syncBusy = true;
+    try{
+      for (var round=0; round<5; round++){
+        stampAll();
+        var meta = loadMeta();
+        var out = [];
+        [['reminder', state.reminders], ['note', state.notes]].forEach(function(p){
+          p[1].forEach(function(x){
+            if ((x.upd||0) > meta.sent) out.push({id:String(x.id), kind:p[0], text:x.text, due:p[0]==='reminder'?x.due:0,
+              done:!!x.done, ackd:!!x.ackd, deleted:false, upd:x.upd});
+          });
+        });
+        meta.tombs.forEach(function(t){
+          if (t.upd > meta.sent) out.push({id:t.id, kind:'note', text:'', due:0, done:false, ackd:false, deleted:true, upd:t.upd});
+        });
+        out.sort(function(a,b){ return a.upd - b.upd; });
+        out = out.slice(0, 200);
+        var res = await fetch(PUSH_API + '/api/items/sync', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({token:getToken(), since:meta.since, items:out})
+        });
+        var j = await res.json();
+        if (!res.ok || !j.ok) throw new Error(j && j.error ? j.error : ('HTTP ' + res.status));
+        meta = loadMeta();               // stampAll 之後可能已更新，重新讀取再套用
+        var changed = applyRemote(j.items || [], meta);
+        if (out.length) meta.sent = Math.max(meta.sent, out[out.length-1].upd);
+        meta.tombs = meta.tombs.filter(function(t){ return t.upd > meta.sent; });
+        meta.since = j.more ? j.next : Math.max(0, j.now - 10000);
+        saveMeta(meta);
+        if (changed){
+          try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){}
+          render();
+        }
+        if (!j.more && out.length < 200) break;
+      }
+      syncLastMsg = '已同步 ' + pad(new Date().getHours()) + ':' + pad(new Date().getMinutes());
+    }catch(e){
+      syncLastMsg = '同步失敗：' + (e && e.message ? e.message : e);
+    }finally{
+      syncBusy = false;
+      updateSyncUI();
+    }
+  }
+  function syncSoon(){
+    if (!syncOn()) return;
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(function(){ itemsSync().then(function(){ pushSync(); }); }, 1500);
+  }
+  function updateSyncUI(){
+    var on = syncOn(), b = $('syncBtn'); if (!b) return;
+    b.textContent = on ? '⏹ 關閉與電腦同步' : '🔄 開啟與電腦同步';
+    b.setAttribute('data-on', on ? '1' : '0');
+    $('syncBox').style.display = on ? 'block' : 'none';
+    $('syncToken').value = on ? getToken() : '';
+    $('syncState').textContent = syncLastMsg || (on ? '尚未同步' : '');
+  }
+  setInterval(function(){
+    if (document.visibilityState === 'visible') itemsSync().then(function(){ pushSync(); });
+  }, 60000);
 
   // 把「尚未完成、尚未確認」的提醒同步給伺服器（有變動 800ms 後才送，避免狂送）
   function pushSync(force){
@@ -348,7 +502,7 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
         return reg.getNotifications();
       }).then(function(list){ list.forEach(function(n){n.close();}); }).catch(function(){});
     }catch(e){}
-    pushSync(true);
+    itemsSync().then(function(){ pushSync(true); });
   }
   document.addEventListener('visibilitychange', onForeground);
 
@@ -561,8 +715,32 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   $('pushBtn').addEventListener('click', function(){
     if (this.getAttribute('data-on') === '1') disablePush(); else enablePush();
   });
+  $('syncBtn').addEventListener('click', function(){
+    if (syncOn()){
+      localStorage.removeItem(SYNC_FLAG);
+      syncLastMsg = '';
+      setStatus('已關閉與電腦同步（雲端上的備忘錄不會自動刪除）。', false);
+      updateSyncUI();
+    } else {
+      localStorage.setItem(SYNC_FLAG, '1');
+      syncLastMsg = '同步中…';
+      updateSyncUI();
+      itemsSync().then(function(){ pushSync(true); });
+    }
+  });
+  $('syncNowBtn').addEventListener('click', function(){
+    syncLastMsg = '同步中…'; updateSyncUI();
+    itemsSync().then(function(){ pushSync(true); });
+  });
+  $('syncCopyBtn').addEventListener('click', function(){
+    var t = getToken();
+    var done = function(){ setStatus('同步金鑰已複製，貼到電腦小工具的設定即可。', false); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done).catch(function(){ $('syncToken').select(); });
+    else { $('syncToken').select(); document.execCommand && document.execCommand('copy'); done(); }
+  });
+  updateSyncUI();
   updatePushUI();
-  pushSync(true);
+  itemsSync().then(function(){ pushSync(true); });
   $('settingsBtn').addEventListener('click', function(){
     $('settingsPanel').classList.toggle('show');
   });
@@ -812,6 +990,7 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     state.reminders.forEach(function(x){
       if(!x.done && x.due <= now && !notified[x.id]){
         notified[x.id] = true;
+        if(x.ackd) return;   // 已在電腦或先前確認過，不重複響鈴
         // 使用者已在前景看到：標記已確認，伺服器就不會再推
         if(!x.ackd){ x.ackd = true; changed = true; }
         setStatus('⏰ 時間到：' + x.text, true);

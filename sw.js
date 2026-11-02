@@ -2,7 +2,7 @@
    1. 網路優先快取（離線時用備份）
    2. 接收 Web Push，顯示系統通知（iPhone 背景 / 鎖定畫面也能響） */
 
-const CACHE = 'secretary-v4'; // 版本號往上加，才會清掉舊快取
+const CACHE = 'secretary-v5'; // 版本號往上加，才會清掉舊快取
 const CORE_ASSETS = [
   './',
   './index.html',
